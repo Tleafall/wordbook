@@ -155,6 +155,23 @@ function guessSenses(senses, sub) {
 }
 // 這個字「我要記的意思」：有選過就用選的，沒選過用字典前幾個
 const meaningOf = (it, n = 3) => it.meaning || shortZh(it.zh, n);
+// 列出字典全部意思，把「這句用到的」標顏色；自己寫、字典沒有的意思另外列在最上面
+function sensesHtml(zh, meaning) {
+  const chosen = (meaning || '').split('、').map(s => s.trim()).filter(Boolean);
+  const used = new Set();
+  const lines = (zh || '').split('\n').map(l => {
+    const m = l.match(/^([a-z]+\.)\s*(.*)$/i);
+    const pos = m ? m[1] : '', body = m ? m[2] : l;
+    const items = body.split(/,\s*/).map(t => {
+      const hit = chosen.includes(t.trim());
+      if (hit) used.add(t.trim());
+      return hit ? `<mark class="hit">${esc(t)}</mark>` : esc(t);
+    });
+    return `<div>${pos ? `<span class="pos">${esc(pos)}</span> ` : ''}${items.join(', ')}</div>`;
+  });
+  const extra = chosen.filter(c => !used.has(c));
+  return `<div class="senses">${extra.length ? `<div><span class="pos">這句</span> ${extra.map(x => `<mark class="hit">${esc(x)}</mark>`).join(', ')}</div>` : ''}${lines.join('')}</div>`;
+}
 function refreshMeaning(it) {
   const all = [];
   for (const c of it.contexts) for (const s of (c.sense || '').split('、')) if (s && !all.includes(s)) all.push(s);
@@ -491,7 +508,7 @@ async function doLookup(q, opts = {}) {
       </div>
       ${lemma && lemma !== w ? `<div class="lemma-note">${esc(w)} 是 <a class="link" data-go="${esc(lemma)}">${esc(lemma)}</a> 的變化形</div>` : ''}
       ${opts.from ? `<div class="lemma-note">你查的「${esc(opts.from)}」是 ${esc(w)} 的變化形（過去式、複數、-ing 等）</div>` : ''}
-      <p class="zh">${esc(e.zh)}</p>
+      <div class="zh">${sensesHtml(e.zh, existing?.meaning)}</div>
       <div id="en-area"><div class="sec-t">英英解釋</div><p class="muted">載入中…</p></div>
       <div style="margin-top:16px" id="add-area"></div>
     </div>`;
@@ -597,7 +614,7 @@ function openWordSheet(w) {
     <div class="word-h"><h2 style="font-size:28px">${esc(w)}</h2><button class="speak" id="ws-say">🔊</button><span class="tag lv">${STATUS_ZH[wordStatus(it)]}</span></div>
     ${it.phon ? `<div class="phon">/${esc(it.phon)}/</div>` : ''}
     <div class="field" style="margin-top:12px"><label>我要記的意思（卡片考這個）</label><input id="ws-meaning" value="${esc(it.meaning || '')}" placeholder="${esc(shortZh(it.zh, 3))}"></div>
-    <details class="muted"><summary>字典全部意思</summary><p class="zh" style="margin-top:6px">${esc(it.zh)}</p></details>
+    <div class="zh">${sensesHtml(it.zh, it.meaning)}</div>
     ${it.en ? `<div class="sec-t">英英</div><ul class="en-def">${it.en.map(m => `<li><span class="pos">${esc(m.pos)}</span>${esc(m.defs[0]?.def || '')}${m.defs[0]?.ex ? `<div class="ex">“${esc(m.defs[0].ex)}”</div>` : ''}</li>`).join('')}</ul>` : ''}
     <div class="sec-t">在哪裡看到</div>
     ${it.contexts.length ? it.contexts.map((c, i) => `<div class="ctx-item">${c.sentence ? highlight(c.sentence, w) : '<span class="muted">（沒有記原句）</span>'}${c.zh ? `<div class="ctx-zh">${esc(c.zh)}</div>` : ''}<div class="src">${esc([c.source, c.ep].filter(Boolean).join(' ・ '))}${c.sentence ? ` <button class="link" data-sayctx="${i}">🔊</button>` : ''}${sceneLink(c)}</div></div>`).join('') : '<p class="muted">還沒有記錄。</p>'}
@@ -810,7 +827,7 @@ function renderCard(x, revealed) {
   const fullAnswer = `
     <div class="word-h" style="justify-content:center"><h2 style="font-size:30px">${esc(w)}</h2><button class="speak" data-say="${esc(w)}">🔊</button></div>
     ${it.phon ? `<div class="phon" style="text-align:center">/${esc(it.phon)}/</div>` : ''}
-    ${it.meaning ? `<p class="meaning">${esc(it.meaning)}</p><details class="muted" style="text-align:center"><summary>字典全部意思</summary><p class="zh">${esc(it.zh)}</p></details>` : `<p class="zh" style="text-align:center">${esc(it.zh)}</p>`}
+    <div class="zh" style="text-align:center">${sensesHtml(it.zh, it.meaning)}</div>
     ${it.en && it.en[0] ? `<p class="muted" style="text-align:center">${esc(it.en[0].defs[0]?.def || '')}</p>` : ''}
     ${ctx ? `<div class="ctx">${highlight(ctx.sentence, w)}${ctx.zh ? `<div class="ctx-zh">${esc(ctx.zh)}</div>` : ''}<div class="muted" style="font-size:12px">${esc([ctx.source, ctx.ep].filter(Boolean).join(' ・ '))}${sceneLink(ctx)}</div></div>` : ''}
     ${it.note ? `<p class="muted">📝 ${esc(it.note)}</p>` : ''}`;
@@ -1288,7 +1305,12 @@ document.addEventListener('visibilitychange', () => {
   updateBadge();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
   $('#search-empty').hidden = false;
-  try { await loadDict(); renderRecent(); if (qEl.value) renderSuggest(); handleCapture(); }
+  try {
+    await loadDict();
+    // 字典更新後，已收藏的字也換成新版解釋
+    for (const it of Object.values(S.words)) { const e = DICT.e[it.word]; if (e && e[1] && it.zh !== e[1]) it.zh = e[1]; }
+    save();
+    renderRecent(); if (qEl.value) renderSuggest(); handleCapture(); }
   catch { toast('字典載入失敗，請連上網路後重開'); }
   updateBadge();
   syncNow();

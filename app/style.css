@@ -224,3 +224,8 @@ select#booksort { background: var(--card); font-size: 14px; padding: 8px 12px; }
 .tag.sense.on small { color: rgba(255,255,255,.8); }
 .meaning { text-align: center; font-size: 22px; font-weight: 700; margin: 12px 0 4px; }
 details summary { cursor: pointer; font-size: 13px; }
+.senses > div { margin: 2px 0; }
+.senses .pos { font-style: italic; color: var(--ink3); font-size: 14px; }
+mark.hit { background: #ffe58a; color: #1d1d1f; font-weight: 700; border-radius: 4px; padding: 0 4px; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) mark.hit { background: #c9a227; color: #111; } }
+:root[data-theme="dark"] mark.hit { background: #c9a227; color: #111; }
