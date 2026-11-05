@@ -1091,7 +1091,7 @@ function importJSON(e) {
 // 在 Netflix 播放頁按書籤：讀出雙語字幕擴充功能畫的英／中字幕、劇名、秒數，傳到這裡
 function bookmarkletCode() {
   const app = location.origin + location.pathname;
-  const src = `(()=>{const g=s=>((document.querySelector(s)||{}).innerText||'').trim();let en=g('#mainSub'),zh=g('#secondSub');if(!en)en=g('.player-timedtext');if(!en){alert('現在畫面上沒有字幕');return}let ti='';for(const e of document.querySelectorAll('span,h4,div')){if(e.children.length)continue;const t=(e.innerText||'').trim();if(/第\\s*\\d+\\s*集/.test(t)&&t.length<80){ti=t;break}}const v=document.querySelector('video');const m=location.pathname.match(/watch\\/(\\d+)/);if(v)v.pause();window.open(${JSON.stringify(app)}+'#cap='+encodeURIComponent(JSON.stringify({en,zh,ti,nf:m?m[1]:'',t:v?Math.floor(v.currentTime):0})),'wordbook')})()`;
+  const src = `(()=>{const g=s=>((document.querySelector(s)||{}).innerText||'').trim();let en=g('#mainSub'),zh=g('#secondSub');if(!en)en=g('.player-timedtext');if(!en){alert('現在畫面上沒有字幕');return}let ti='';for(const e of document.querySelectorAll('span,h4,div')){if(e.children.length)continue;const t=(e.innerText||'').trim();if(/第\\s*\\d+\\s*集/.test(t)&&t.length<80){ti=t;break}}const v=document.querySelector('video');const m=location.pathname.match(/watch\\/(\\d+)/);let src='',ep='';try{const id=+m[1];const vd=netflix.appContext.state.playerApp.getState().videoPlayer.videoMetadata[id]._metadataObject.video;src=vd.title||'';for(const s of vd.seasons||[])for(const e of s.episodes||[])if((e.id||e.episodeId)==id)ep='S'+String(s.seq).padStart(2,'0')+'E'+String(e.seq).padStart(2,'0')}catch(x){}if(v)v.pause();window.open(${JSON.stringify(app)}+'#cap='+encodeURIComponent(JSON.stringify({en,zh,ti,src,ep,nf:m?m[1]:'',t:v?Math.floor(v.currentTime):0})),'wordbook')})()`;
   return 'javascript:' + encodeURIComponent(src);
 }
 function parseNfTitle(ti) {
@@ -1108,7 +1108,7 @@ function handleCapture() {
   let d; try { d = JSON.parse(decodeURIComponent(h.slice(5))); } catch { return; }
   if (!d.en) return;
   S.nfTitles = S.nfTitles || {};
-  let meta = parseNfTitle(d.ti);
+  let meta = d.src ? { src: d.src, ep: d.ep || '' } : parseNfTitle(d.ti);
   if (d.nf) { if (meta.src) S.nfTitles[d.nf] = meta; else meta = S.nfTitles[d.nf] || {}; save(); }
   show('search');
   setSentence(d.en + '\n' + (d.zh || ''));

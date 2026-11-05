@@ -1,5 +1,5 @@
 // 離線快取：App 本體和字典存在手機上，沒網路也能查
-const VERSION = 'wb-v2';
+const VERSION = 'wb-v3';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'fsrs.js', 'dict.json', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
