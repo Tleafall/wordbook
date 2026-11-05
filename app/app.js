@@ -1201,6 +1201,7 @@ function captureFn(APP) {
     var segs = Array.prototype.map.call(document.querySelectorAll('.ytp-caption-segment'), function (e) { return e.innerText.trim(); });
     var cap = segs.join(' ').trim();
     if (!cap) { alert('現在畫面上沒有字幕（請先打開 YouTube 的 CC 字幕），或先選取一段文字'); return; }
+    if (!/[A-Za-z]{2}/.test(cap)) { alert('現在的字幕不是英文。請到 YouTube 的「設定 ⚙ → 字幕」改成英文再按一次'); return; }
     var vid = new URLSearchParams(location.search).get('v'), t = v ? Math.floor(v.currentTime) : 0;
     if (v) v.pause();
     send({ en: cap, src: txt('h1.ytd-watch-metadata') || document.title.replace(/\s*-\s*YouTube$/, ''), url: vid ? 'https://www.youtube.com/watch?v=' + vid : location.href.split('#')[0], t: t });
