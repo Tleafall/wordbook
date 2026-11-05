@@ -50,7 +50,7 @@ function touch(item) { item.mod = now(); scheduleSync(); }
 /* ---------- 離線字典 ---------- */
 let DICT = null, KEYS = null;
 async function loadDict() {
-  const r = await fetch('dict.json');
+  const r = await fetch('dict.json?v=2'); // 字典更新時改這個版本號
   DICT = await r.json();
   KEYS = Object.keys(DICT.e).sort();
 }
@@ -135,6 +135,32 @@ function shortZh(zh, n = 3) {
   return parts.join('、');
 }
 
+// 把字典解釋拆成一個個意思，給「這句的意思」點選
+function senseList(zh) {
+  const out = [];
+  for (const l of (zh || '').split('\n')) {
+    const m = l.match(/^([a-z]+\.)\s*(.*)$/i);
+    const pos = m ? m[1] : '', body = (m ? m[2] : l).trim();
+    if (/^\[[^\]]+\]/.test(body)) continue;
+    for (const p of body.split(/[,，；;]/)) { const t = p.trim(); if (t && !out.some(o => o.t === t)) out.push({ pos, t }); }
+  }
+  return out;
+}
+// 跟中文字幕有共同字的意思，先幫你選起來（只是猜測，可以改）
+function guessSenses(senses, sub) {
+  if (!sub) return [];
+  const sc = senses.map((s, i) => [i, [...new Set(s.t.replace(/[^一-鿿]/g, ''))].filter(ch => sub.includes(ch)).length]);
+  const best = Math.max(0, ...sc.map(x => x[1]));
+  return best >= 1 ? sc.filter(x => x[1] === best && x[1] >= Math.min(2, [...senses[x[0]].t].length)).map(x => x[0]).slice(0, 2) : [];
+}
+// 這個字「我要記的意思」：有選過就用選的，沒選過用字典前幾個
+const meaningOf = (it, n = 3) => it.meaning || shortZh(it.zh, n);
+function refreshMeaning(it) {
+  const all = [];
+  for (const c of it.contexts) for (const s of (c.sense || '').split('、')) if (s && !all.includes(s)) all.push(s);
+  if (all.length) it.meaning = all.join('、');
+}
+
 /* ---------- 線上資料：英英解釋、真人發音 ---------- */
 const enCache = new Map();
 async function fetchEnglish(word) {
@@ -214,12 +240,13 @@ function addWord(w, entry, extra) {
   save();
   return item;
 }
-function addContext(item, { sentence, zh, source, ep, note, nf, t }) {
+function addContext(item, { sentence, zh, source, ep, note, nf, t, sense }) {
   touch(item);
-  if (sentence || source || ep || zh) {
-    const c = { sentence: (sentence || '').trim(), zh: (zh || '').trim(), source: (source || '').trim(), ep: (ep || '').trim(), at: now() };
+  if (sentence || source || ep || zh || sense) {
+    const c = { sentence: (sentence || '').trim(), zh: (zh || '').trim(), source: (source || '').trim(), ep: (ep || '').trim(), sense: (sense || '').trim(), at: now() };
     if (nf) { c.nf = String(nf); c.t = Math.max(0, Math.floor(t || 0) - 3); } // Netflix 影片編號與秒數，可跳回那一幕
     item.contexts.push(c);
+    refreshMeaning(item);
   }
   if (note) item.note = item.note ? item.note + '\n' + note : note;
   if (source) S.lastSource = source.trim();
@@ -503,9 +530,17 @@ function renderAddArea(w) {
 }
 
 function openAddSheet(w, existing) {
+  const zhAll = existing ? getWord(w).zh : ($('#result')._entry?.zh || '');
+  const senses = senseList(zhAll);
+  const picked = new Set(guessSenses(senses, curSentence?.zh));
   openSheet(`
     <h3 style="margin:0 0 4px">${existing ? '再記一筆出處' : '加入單字冊'}：${esc(w)}</h3>
-    <p class="muted" style="margin:0 0 14px">記下在哪裡看到、原本那句台詞。有「情境」的字比單獨背的字好記很多，這句也會出現在之後的拼寫卡上。全部都可以不填。</p>
+    <p class="muted" style="margin:0 0 12px">記下在哪裡看到、原本那句台詞。有「情境」的字比單獨背的字好記很多。全部都可以不填。</p>
+    ${curSentence?.en ? `<div class="ctx-item">${highlight(curSentence.en, w)}${curSentence.zh ? `<div class="ctx-zh">${esc(curSentence.zh)}</div>` : ''}</div>` : ''}
+    <div class="field"><label>在這句裡是什麼意思？（點選，可多選；卡片只會考你選的）</label>
+      <div class="tags" id="f-senses">${senses.map((s, i) => `<button type="button" class="tag sense ${picked.has(i) ? 'on' : ''}" data-i="${i}"><small>${esc(s.pos)}</small> ${esc(s.t)}</button>`).join('') || '<span class="muted">字典沒有中文解釋，請自己寫</span>'}</div>
+      <input id="f-sense" style="margin-top:8px" placeholder="或自己寫，例如：論點、理由" value="${esc([...picked].map(i => senses[i].t).join('、'))}">
+    </div>
     <div class="row">
       <div class="field" style="flex:2"><label>影集／來源</label><input id="f-src" list="srclist" value="${esc(curSentence?.src || S.lastSource || '')}" placeholder="例如 Friends"></div>
       <div class="field" style="flex:1"><label>集數</label><input id="f-ep" value="${esc(curSentence?.ep || S.lastEp || '')}" placeholder="S01E03"></div>
@@ -517,8 +552,15 @@ function openAddSheet(w, existing) {
     <button class="btn block" id="f-save">${existing ? '儲存' : '加入'}</button>
     <button class="btn block plain" style="margin-top:8px" id="f-cancel">取消</button>`, body => {
     body.querySelector('#f-cancel').onclick = closeSheet;
+    body.querySelectorAll('#f-senses .sense').forEach(b => b.onclick = () => {
+      const i = +b.dataset.i;
+      picked.has(i) ? picked.delete(i) : picked.add(i);
+      b.classList.toggle('on', picked.has(i));
+      $('#f-sense').value = [...picked].sort((a, c) => a - c).map(k => senses[k].t).join('、');
+    });
     body.querySelector('#f-save').onclick = () => {
-      const extra = { source: $('#f-src').value, ep: $('#f-ep').value, sentence: $('#f-sent').value, zh: $('#f-zh').value, note: $('#f-note').value, nf: curSentence?.nf, t: curSentence?.t };
+      const sense = $('#f-sense').value.replace(/[,，;；]/g, '、').replace(/\s*、\s*/g, '、').trim();
+      const extra = { source: $('#f-src').value, ep: $('#f-ep').value, sentence: $('#f-sent').value, zh: $('#f-zh').value, note: $('#f-note').value, nf: curSentence?.nf, t: curSentence?.t, sense };
       if (existing) { addContext(getWord(w), extra); save(); toast('已記下'); }
       else {
         const item = addWord(w, $('#result')._entry, extra);
@@ -554,7 +596,8 @@ function openWordSheet(w) {
   openSheet(`
     <div class="word-h"><h2 style="font-size:28px">${esc(w)}</h2><button class="speak" id="ws-say">🔊</button><span class="tag lv">${STATUS_ZH[wordStatus(it)]}</span></div>
     ${it.phon ? `<div class="phon">/${esc(it.phon)}/</div>` : ''}
-    <p class="zh">${esc(it.zh)}</p>
+    <div class="field" style="margin-top:12px"><label>我要記的意思（卡片考這個）</label><input id="ws-meaning" value="${esc(it.meaning || '')}" placeholder="${esc(shortZh(it.zh, 3))}"></div>
+    <details class="muted"><summary>字典全部意思</summary><p class="zh" style="margin-top:6px">${esc(it.zh)}</p></details>
     ${it.en ? `<div class="sec-t">英英</div><ul class="en-def">${it.en.map(m => `<li><span class="pos">${esc(m.pos)}</span>${esc(m.defs[0]?.def || '')}${m.defs[0]?.ex ? `<div class="ex">“${esc(m.defs[0].ex)}”</div>` : ''}</li>`).join('')}</ul>` : ''}
     <div class="sec-t">在哪裡看到</div>
     ${it.contexts.length ? it.contexts.map((c, i) => `<div class="ctx-item">${c.sentence ? highlight(c.sentence, w) : '<span class="muted">（沒有記原句）</span>'}${c.zh ? `<div class="ctx-zh">${esc(c.zh)}</div>` : ''}<div class="src">${esc([c.source, c.ep].filter(Boolean).join(' ・ '))}${c.sentence ? ` <button class="link" data-sayctx="${i}">🔊</button>` : ''}${sceneLink(c)}</div></div>`).join('') : '<p class="muted">還沒有記錄。</p>'}
@@ -566,7 +609,14 @@ function openWordSheet(w) {
     <button class="btn block danger" style="margin-top:10px" id="ws-del">從單字冊刪除</button>`, body => {
     body.querySelector('#ws-say').onclick = () => say(w, 'en');
     body.querySelectorAll('[data-sayctx]').forEach(b => b.onclick = () => say(it.contexts[+b.dataset.sayctx].sentence, 'en'));
-    const saveNote = () => { if (it.note !== $('#ws-note').value) { it.note = $('#ws-note').value; touch(it); save(); } };
+    const saveNote = () => {
+      let dirty = false;
+      if (it.note !== $('#ws-note').value) { it.note = $('#ws-note').value; dirty = true; }
+      const mv = $('#ws-meaning').value.replace(/[,，;；]/g, '、').trim();
+      if ((it.meaning || '') !== mv) { it.meaning = mv; dirty = true; }
+      if (dirty) { touch(it); save(); }
+    };
+    body.querySelector('#ws-meaning').onchange = saveNote;
     body.querySelector('#ws-note').onchange = saveNote;
     body.querySelector('#ws-close').onclick = () => { saveNote(); closeSheet(); if (currentView === 'book') renderBook(); };
     body.querySelector('#ws-ctx').onclick = () => { saveNote(); openAddSheet(w, true); };
@@ -628,7 +678,7 @@ function renderBook() {
       if (src !== lastSrc) { html += `<li class="group-h">${esc(src)}</li>`; lastSrc = src; }
     }
     const nd = nextDueOf(it);
-    const sub = sort === 'due' ? (it.cards.rec.state === 'new' ? '新字' : nd <= t ? '現在該複習' : FSRS.fmtDelay(nd - t) + '後') : shortZh(it.zh, 3);
+    const sub = sort === 'due' ? (it.cards.rec.state === 'new' ? '新字' : nd <= t ? '現在該複習' : FSRS.fmtDelay(nd - t) + '後') : meaningOf(it);
     html += `<li data-w="${esc(it.word)}"><div class="w"><b>${esc(it.word)}</b><div>${esc(sub)}</div></div>${dotsHtml(it)}</li>`;
   }
   $('#booklist').innerHTML = html || '<li class="muted">沒有符合的字</li>';
@@ -756,11 +806,11 @@ function renderCard(x, revealed) {
   const total = session.done + session.keys.length;
   const pct = total ? session.done / total * 100 : 0;
   let prompt = '', answer = '';
-  const zhShort = shortZh(it.zh, 4) || it.zh;
+  const zhShort = meaningOf(it, 4) || it.zh;
   const fullAnswer = `
     <div class="word-h" style="justify-content:center"><h2 style="font-size:30px">${esc(w)}</h2><button class="speak" data-say="${esc(w)}">🔊</button></div>
     ${it.phon ? `<div class="phon" style="text-align:center">/${esc(it.phon)}/</div>` : ''}
-    <p class="zh" style="text-align:center">${esc(it.zh)}</p>
+    ${it.meaning ? `<p class="meaning">${esc(it.meaning)}</p><details class="muted" style="text-align:center"><summary>字典全部意思</summary><p class="zh">${esc(it.zh)}</p></details>` : `<p class="zh" style="text-align:center">${esc(it.zh)}</p>`}
     ${it.en && it.en[0] ? `<p class="muted" style="text-align:center">${esc(it.en[0].defs[0]?.def || '')}</p>` : ''}
     ${ctx ? `<div class="ctx">${highlight(ctx.sentence, w)}${ctx.zh ? `<div class="ctx-zh">${esc(ctx.zh)}</div>` : ''}<div class="muted" style="font-size:12px">${esc([ctx.source, ctx.ep].filter(Boolean).join(' ・ '))}${sceneLink(ctx)}</div></div>` : ''}
     ${it.note ? `<p class="muted">📝 ${esc(it.note)}</p>` : ''}`;
@@ -906,7 +956,7 @@ function renderWalkStage() {
   $('#wnext').onclick = () => { walk.i = (walk.i + 1) % walk.list.length; walkRestart(); };
   $('#wforgot').onclick = () => walkForgot(w);
   $('#wend').onclick = () => { walkStop(); walk = null; renderWalkHome(); };
-  if (it && !walk.playing) { $('#wz').textContent = shortZh(it.zh, 3); }
+  if (it && !walk.playing) { $('#wz').textContent = meaningOf(it); }
 }
 function walkForgot(w) {
   const it = S.words[w]; if (!it || walk.forgot.has(w)) return;
@@ -940,7 +990,7 @@ async function walkLoop() {
     if (!(await sleep(700, tok))) return;
     await speak(w, 'en', Math.max(0.5, S.settings.rate - 0.2)); if (walk?.token !== tok) return;
     if (!(await sleep(S.settings.walkPause * 1000, tok))) return;
-    const zh = shortZh(it.zh, 3);
+    const zh = meaningOf(it);
     $('#wz').textContent = zh; $('#wc').textContent = '';
     if (S.settings.walkZh) { await speak(zh, 'zh', 1.0); if (walk?.token !== tok) return; }
     if (S.settings.walkSentence && ctx) {

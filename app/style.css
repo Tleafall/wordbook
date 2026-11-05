@@ -218,3 +218,9 @@ select#booksort { background: var(--card); font-size: 14px; padding: 8px 12px; }
 .sent-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
 .ctx-zh { color: var(--ink2); font-size: 14px; margin-top: 2px; }
 .tags button.tag { cursor: pointer; }
+.tag.sense { cursor: pointer; font-size: 14px; padding: 5px 10px; }
+.tag.sense small { color: var(--ink3); font-size: 11px; }
+.tag.sense.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tag.sense.on small { color: rgba(255,255,255,.8); }
+.meaning { text-align: center; font-size: 22px; font-weight: 700; margin: 12px 0 4px; }
+details summary { cursor: pointer; font-size: 13px; }

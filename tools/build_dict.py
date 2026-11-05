@@ -1,7 +1,21 @@
 import csv, json, sys, re, io
 import opencc
 BS_N = chr(92) + 'n'
-cc = opencc.OpenCC('s2twp')
+_cc = opencc.OpenCC('s2twp')
+# 這幾個詞 s2twp 會換成台灣電腦用語，反而不對，先保護起來
+PROTECT = {'支持': '支持', '参数': '參數', '自变量': '自變量', '质量': '品質', '信息': '訊息'}
+class _CC:
+    def convert(self, t):
+        keep = []
+        for k, v in PROTECT.items():
+            if k in t:
+                t = t.replace(k, '%d' % len(keep)); keep.append(v)
+        t = _cc.convert(t)
+        for i, v in enumerate(keep): t = t.replace('%d' % i, v)
+        return t
+cc = _CC()
+# 專業領域的意思（醫學、化學、電腦…）：有一般意思時就不列，避免干擾
+DOMAIN = {'医','化','计','经','法','电','机','建','体','动','植','矿','地质','生','药','气','天','物','数','生化','有化','解','财','人名','地名','鸟类','动物','植物','网络','电影','男子名','女子名'}
 src, out = sys.argv[1], sys.argv[2]
 csv.field_size_limit(10**9)
 rows = {}
@@ -37,9 +51,21 @@ for w in ["gonna","wanna","gotta","lemme","gimme","dunno","ain't","y'all","kinda
 
 def clean_tr(t):
     lines = [l.strip() for l in t.split(BS_N) if l.strip()]
-    non_net = [l for l in lines if not l.startswith('[网络]')]
-    if non_net: lines = non_net + [l for l in lines if l.startswith('[网络]')][:0]
-    return cc.convert('\n'.join(lines[:6]))[:400]
+    def dom(l):
+        m = re.match(r'\[([^\]]{1,6})\]', l)
+        return m and m.group(1) in DOMAIN
+    general = [l for l in lines if not dom(l)]
+    if general: lines = general
+    else: lines = [l for l in lines if not l.startswith('[网络]')] or lines
+    out = []
+    for l in cc.convert('\n'.join(lines[:6])).split('\n'):
+        m = re.match(r'^([a-z]+\.\s*)?(.*)$', l)
+        pre, body = m.group(1) or '', m.group(2)
+        seen = []
+        for item in re.split(r',\s*', body):  # 轉繁體後可能出現重複的意思
+            if item and item not in seen: seen.append(item)
+        out.append(pre + ', '.join(seen))
+    return '\n'.join(out)[:400]
 
 def clean_def(d):
     lines = [l.strip() for l in d.split(BS_N) if l.strip()]
