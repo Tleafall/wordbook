@@ -41,9 +41,11 @@ const DEFAULT_SETTINGS = {
   newPerDay: 15, retention: 0.9, walkPause: 3, rate: 0.9, walkSentence: true, walkZh: true,
   theme: 'auto', enVoice: '', zhVoice: '', autoSpeak: true
 };
-let S = { words: {}, settings: { ...DEFAULT_SETTINGS }, log: [], daily: {}, recent: [], lastSource: '' };
+let S = { words: {}, settings: { ...DEFAULT_SETTINGS }, log: [], daily: {}, recent: [], lastSource: '', deleted: {}, sync: null };
 let saveTimer = null;
 function save() { clearTimeout(saveTimer); saveTimer = setTimeout(() => DB.set('state', S).catch(e => toast('儲存失敗：' + e.message)), 250); }
+// 單字有變動：記下時間（同步時用來判斷哪邊比較新），並安排同步
+function touch(item) { item.mod = now(); scheduleSync(); }
 
 /* ---------- 離線字典 ---------- */
 let DICT = null, KEYS = null;
@@ -206,12 +208,19 @@ function addWord(w, entry, extra) {
     cards: { rec: FSRS.newCard() }
   };
   S.words[w] = item;
+  delete S.deleted[w];
   if (extra) addContext(item, extra);
+  touch(item);
   save();
   return item;
 }
-function addContext(item, { sentence, source, ep, note }) {
-  if (sentence || source || ep) item.contexts.push({ sentence: (sentence || '').trim(), source: (source || '').trim(), ep: (ep || '').trim(), at: now() });
+function addContext(item, { sentence, zh, source, ep, note, nf, t }) {
+  touch(item);
+  if (sentence || source || ep || zh) {
+    const c = { sentence: (sentence || '').trim(), zh: (zh || '').trim(), source: (source || '').trim(), ep: (ep || '').trim(), at: now() };
+    if (nf) { c.nf = String(nf); c.t = Math.max(0, Math.floor(t || 0) - 3); } // Netflix 影片編號與秒數，可跳回那一幕
+    item.contexts.push(c);
+  }
   if (note) item.note = item.note ? item.note + '\n' + note : note;
   if (source) S.lastSource = source.trim();
   if (ep) S.lastEp = ep.trim();
@@ -255,6 +264,7 @@ function relookup(item) {
   const gap = t - (item.lastLookup || item.added);
   item.lookups = (item.lookups || 1) + 1;
   item.lastLookup = t;
+  touch(item);
   let msg = '';
   if (gap > 6 * 36e5) {
     const r = item.cards.rec;
@@ -285,6 +295,11 @@ function highlight(sentence, word) {
   const stem = parts.map(p => p.length > 3 ? p.replace(/e$|y$/, '') + "[a-z']*" : p + "[a-z']*").join('\\s+(?:\\w+\\s+)?');
   try { return s.replace(new RegExp('\\b(' + stem + ')', 'ig'), '<em>$1</em>'); } catch { return s; }
 }
+function sceneLink(c) {
+  if (!c || !c.nf) return '';
+  const m = Math.floor((c.t || 0) / 60), s = String((c.t || 0) % 60).padStart(2, '0');
+  return ` <a class="link" target="_blank" rel="noopener" href="https://www.netflix.com/watch/${encodeURIComponent(c.nf)}?t=${c.t || 0}">▶︎ 回到這一幕 ${m}:${s}</a>`;
+}
 function clozeOf(sentence, word) {
   const html = highlight(sentence, word);
   return html.includes('<em>') ? html.replace(/<em>([^<]*)<\/em>/g, (_, m) => '<em>' + m.split(/\s+/).map(() => '＿＿＿').join(' ') + '</em>') : '';
@@ -314,10 +329,84 @@ let sugTimer;
 qEl.addEventListener('input', () => {
   clearTimeout(sugTimer);
   $('#qclear').style.visibility = qEl.value ? 'visible' : 'hidden';
+  if (isSentence(qEl.value)) { const v = qEl.value; qEl.value = ''; setSentence(v); return; }
   sugTimer = setTimeout(renderSuggest, 80);
 });
+// 貼上時直接讀剪貼簿原文（搜尋框會吃掉換行，英中兩行會黏在一起）
+qEl.addEventListener('paste', e => {
+  const raw = e.clipboardData && e.clipboardData.getData('text');
+  if (raw && isSentence(raw)) { e.preventDefault(); qEl.value = ''; setSentence(raw); }
+});
 qEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doLookup(qEl.value); qEl.blur(); } });
-$('#qclear').onclick = () => { qEl.value = ''; $('#suggest').innerHTML = ''; $('#result').innerHTML = ''; $('#search-empty').hidden = false; $('#qclear').style.visibility = 'hidden'; renderRecent(); qEl.focus(); };
+$('#qclear').onclick = () => { qEl.value = ''; $('#suggest').innerHTML = ''; $('#result').innerHTML = ''; $('#sentence').innerHTML = ''; curSentence = null; $('#search-empty').hidden = false; $('#qclear').style.visibility = 'hidden'; renderRecent(); qEl.focus(); };
+
+/* ---------- 貼上整句字幕 ---------- */
+let curSentence = null; // { en, zh, tokens }
+const CJK = /[　-〿㐀-鿿＀-￯]/;
+function isSentence(t) {
+  t = (t || '').trim();
+  if (!t) return false;
+  if (CJK.test(t) && /[a-z]/i.test(t)) return true;
+  if (/\n/.test(t)) return true;
+  return t.split(/\s+/).length >= 4;
+}
+function parseSubtitle(raw) {
+  const en = [], zh = [];
+  for (let line of raw.split(/\r?\n/)) {
+    line = line.trim(); if (!line) continue;
+    // 同一行裡英中混在一起時，把中文段落拆出來
+    const zhPart = (line.match(/[　-〿㐀-鿿＀-￯][　-〿㐀-鿿＀-￯\s\d，。！？、…a-zA-Z]*/g) || []);
+    let enPart = line;
+    if (zhPart.length) { for (const z of zhPart) enPart = enPart.replace(z, ' '); }
+    enPart = enPart.replace(/^\s*[-–—]\s*/, '').replace(/\[[^\]]*\]|\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+    if (enPart && /[a-z]/i.test(enPart)) en.push(enPart);
+    const z = zhPart.join('').trim(); if (z) zh.push(z);
+  }
+  return { en: en.join(' ').replace(/\s+/g, ' '), zh: zh.join(' ') };
+}
+function setSentence(raw) {
+  const { en, zh } = parseSubtitle(raw);
+  if (!en) { toast('沒有找到英文句子'); return; }
+  // 斷成單字和標點；I'm / don't 這類縮寫保持完整
+  const tokens = en.match(/[A-Za-z]+(?:['’][A-Za-z]+)*|[^A-Za-z]+/g) || [];
+  curSentence = { en, zh, tokens };
+  $('#suggest').innerHTML = ''; $('#result').innerHTML = ''; $('#search-empty').hidden = true;
+  $('#qclear').style.visibility = 'visible';
+  renderSentence();
+}
+function renderSentence(active) {
+  const s = curSentence; if (!s) { $('#sentence').innerHTML = ''; return; }
+  let wi = 0;
+  const html = s.tokens.map((t, i) => /[A-Za-z]/.test(t)
+    ? `<button class="tok ${active === i ? 'on' : ''} ${getWord(t.toLowerCase()) ? 'known' : ''}" data-i="${i}">${esc(t)}</button>`
+    : `<span>${esc(t)}</span>`).join('');
+  $('#sentence').innerHTML = `<div class="card sent">
+      <div class="sent-en">${html}</div>
+      ${s.zh ? `<div class="sent-zh">${esc(s.zh)}</div>` : ''}
+      <div class="sent-bar"><span class="muted">點不懂的字查詢</span><button class="link" id="sent-say">🔊 念整句</button></div>
+      <div id="phr"></div>
+    </div>`;
+  $$('#sentence .tok').forEach(b => b.onclick = () => tapToken(+b.dataset.i));
+  $('#sent-say').onclick = () => say(s.en, 'en');
+}
+// 點一個字：查這個字，並找出句子裡包含它的片語（例如 figure it out → figure out）
+function tapToken(i) {
+  const s = curSentence;
+  const words = []; const idx = [];
+  s.tokens.forEach((t, j) => { if (/[A-Za-z]/.test(t)) { words.push(norm(t.replace(/’/g, "'"))); idx.push(j); } });
+  const k = idx.indexOf(i); if (k < 0) return;
+  const lem = w => DICT.f[w] || w;
+  const found = [];
+  const tryP = arr => { for (const v of [arr.join(' '), [lem(arr[0]), ...arr.slice(1)].join(' ')]) if (DICT.e[v] && v.includes(' ') && !found.includes(v)) found.push(v); };
+  for (let a = Math.max(0, k - 2); a <= k; a++) for (let b = k; b <= Math.min(words.length - 1, a + 3); b++) if (b > a) tryP(words.slice(a, b + 1));
+  // 中間夾一個字的片語：figure it out、pick him up
+  if (k + 2 < words.length) tryP([words[k], words[k + 2]]);
+  if (k >= 2) tryP([words[k - 2], words[k]]);
+  renderSentence(i);
+  $('#phr').innerHTML = found.length ? `<div class="sec-t" style="margin-top:12px">句子裡的片語</div><div class="tags">${found.slice(0, 5).map(p => `<button class="tag lv" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div>` : '';
+  $$('#phr [data-p]').forEach(b => b.onclick = () => doLookup(b.dataset.p, { keepSentence: true }));
+  doLookup(words[k], { keepSentence: true });
+}
 $('#qclear').style.visibility = 'hidden';
 
 function renderSuggest() {
@@ -331,6 +420,7 @@ function renderSuggest() {
 async function doLookup(q, opts = {}) {
   const { w, entry, lemma } = lookupLocal(q);
   if (!w) return;
+  if (!opts.keepSentence) { curSentence = null; $('#sentence').innerHTML = ''; }
   $('#suggest').innerHTML = '';
   $('#search-empty').hidden = true;
   qEl.value = w;
@@ -417,17 +507,18 @@ function openAddSheet(w, existing) {
     <h3 style="margin:0 0 4px">${existing ? '再記一筆出處' : '加入單字冊'}：${esc(w)}</h3>
     <p class="muted" style="margin:0 0 14px">記下在哪裡看到、原本那句台詞。有「情境」的字比單獨背的字好記很多，這句也會出現在之後的拼寫卡上。全部都可以不填。</p>
     <div class="row">
-      <div class="field" style="flex:2"><label>影集／來源</label><input id="f-src" list="srclist" value="${esc(S.lastSource || '')}" placeholder="例如 Friends"></div>
-      <div class="field" style="flex:1"><label>集數</label><input id="f-ep" value="${esc(S.lastEp || '')}" placeholder="S01E03"></div>
+      <div class="field" style="flex:2"><label>影集／來源</label><input id="f-src" list="srclist" value="${esc(curSentence?.src || S.lastSource || '')}" placeholder="例如 Friends"></div>
+      <div class="field" style="flex:1"><label>集數</label><input id="f-ep" value="${esc(curSentence?.ep || S.lastEp || '')}" placeholder="S01E03"></div>
     </div>
     <datalist id="srclist">${[...new Set(Object.values(S.words).flatMap(x => x.contexts.map(c => c.source)).filter(Boolean))].map(s => `<option value="${esc(s)}">`).join('')}</datalist>
-    <div class="field"><label>原句（台詞）</label><textarea id="f-sent" placeholder="把那句英文貼上或打下來"></textarea></div>
+    <div class="field"><label>原句（台詞）</label><textarea id="f-sent" placeholder="把那句英文貼上或打下來">${esc(curSentence?.en || '')}</textarea></div>
+    <div class="field"><label>中文字幕（這句在劇裡的意思）</label><input id="f-zh" value="${esc(curSentence?.zh || '')}" placeholder="選填"></div>
     <div class="field"><label>我的筆記</label><input id="f-note" placeholder="自己的理解、聯想、造句…"></div>
     <button class="btn block" id="f-save">${existing ? '儲存' : '加入'}</button>
     <button class="btn block plain" style="margin-top:8px" id="f-cancel">取消</button>`, body => {
     body.querySelector('#f-cancel').onclick = closeSheet;
     body.querySelector('#f-save').onclick = () => {
-      const extra = { source: $('#f-src').value, ep: $('#f-ep').value, sentence: $('#f-sent').value, note: $('#f-note').value };
+      const extra = { source: $('#f-src').value, ep: $('#f-ep').value, sentence: $('#f-sent').value, zh: $('#f-zh').value, note: $('#f-note').value, nf: curSentence?.nf, t: curSentence?.t };
       if (existing) { addContext(getWord(w), extra); save(); toast('已記下'); }
       else {
         const item = addWord(w, $('#result')._entry, extra);
@@ -466,7 +557,7 @@ function openWordSheet(w) {
     <p class="zh">${esc(it.zh)}</p>
     ${it.en ? `<div class="sec-t">英英</div><ul class="en-def">${it.en.map(m => `<li><span class="pos">${esc(m.pos)}</span>${esc(m.defs[0]?.def || '')}${m.defs[0]?.ex ? `<div class="ex">“${esc(m.defs[0].ex)}”</div>` : ''}</li>`).join('')}</ul>` : ''}
     <div class="sec-t">在哪裡看到</div>
-    ${it.contexts.length ? it.contexts.map((c, i) => `<div class="ctx-item">${c.sentence ? highlight(c.sentence, w) : '<span class="muted">（沒有記原句）</span>'}<div class="src">${esc([c.source, c.ep].filter(Boolean).join(' ・ '))}${c.sentence ? ` <button class="link" data-sayctx="${i}">🔊</button>` : ''}</div></div>`).join('') : '<p class="muted">還沒有記錄。</p>'}
+    ${it.contexts.length ? it.contexts.map((c, i) => `<div class="ctx-item">${c.sentence ? highlight(c.sentence, w) : '<span class="muted">（沒有記原句）</span>'}${c.zh ? `<div class="ctx-zh">${esc(c.zh)}</div>` : ''}<div class="src">${esc([c.source, c.ep].filter(Boolean).join(' ・ '))}${c.sentence ? ` <button class="link" data-sayctx="${i}">🔊</button>` : ''}${sceneLink(c)}</div></div>`).join('') : '<p class="muted">還沒有記錄。</p>'}
     <div class="field" style="margin-top:12px"><label>我的筆記</label><textarea id="ws-note">${esc(it.note)}</textarea></div>
     <div class="sec-t">記憶狀態</div>
     <div class="set-group" style="box-shadow:none;background:var(--bg)">${cardRows}</div>
@@ -475,13 +566,13 @@ function openWordSheet(w) {
     <button class="btn block danger" style="margin-top:10px" id="ws-del">從單字冊刪除</button>`, body => {
     body.querySelector('#ws-say').onclick = () => say(w, 'en');
     body.querySelectorAll('[data-sayctx]').forEach(b => b.onclick = () => say(it.contexts[+b.dataset.sayctx].sentence, 'en'));
-    const saveNote = () => { it.note = $('#ws-note').value; save(); };
+    const saveNote = () => { if (it.note !== $('#ws-note').value) { it.note = $('#ws-note').value; touch(it); save(); } };
     body.querySelector('#ws-note').onchange = saveNote;
     body.querySelector('#ws-close').onclick = () => { saveNote(); closeSheet(); if (currentView === 'book') renderBook(); };
     body.querySelector('#ws-ctx').onclick = () => { saveNote(); openAddSheet(w, true); };
     body.querySelector('#ws-del').onclick = () => {
       if (!confirm(`確定要刪除「${w}」和它的複習紀錄嗎？`)) return;
-      delete S.words[w]; save(); closeSheet(); toast('已刪除'); if (currentView === 'book') renderBook(); else renderAddArea(w); updateBadge();
+      delete S.words[w]; S.deleted[w] = now(); scheduleSync(); save(); closeSheet(); toast('已刪除'); if (currentView === 'book') renderBook(); else renderAddArea(w); updateBadge();
     };
   });
 }
@@ -671,7 +762,7 @@ function renderCard(x, revealed) {
     ${it.phon ? `<div class="phon" style="text-align:center">/${esc(it.phon)}/</div>` : ''}
     <p class="zh" style="text-align:center">${esc(it.zh)}</p>
     ${it.en && it.en[0] ? `<p class="muted" style="text-align:center">${esc(it.en[0].defs[0]?.def || '')}</p>` : ''}
-    ${ctx ? `<div class="ctx">${highlight(ctx.sentence, w)}<div class="muted" style="font-size:12px">${esc([ctx.source, ctx.ep].filter(Boolean).join(' ・ '))}</div></div>` : ''}
+    ${ctx ? `<div class="ctx">${highlight(ctx.sentence, w)}${ctx.zh ? `<div class="ctx-zh">${esc(ctx.zh)}</div>` : ''}<div class="muted" style="font-size:12px">${esc([ctx.source, ctx.ep].filter(Boolean).join(' ・ '))}${sceneLink(ctx)}</div></div>` : ''}
     ${it.note ? `<p class="muted">📝 ${esc(it.note)}</p>` : ''}`;
 
   if (k === 'rec') {
@@ -737,6 +828,7 @@ function grade(x, g) {
   if (c.state === 'new') { if (k === 'rec') ts.newRec++; else ts.newExtra++; }
   const n = FSRS.review(c, g, t, S.settings.retention);
   it.cards[k] = n;
+  touch(it);
   if (n.unlocked === undefined && c.unlocked) n.unlocked = c.unlocked;
   S.log.push({ t, w: it.word, k, g });
   if (S.log.length > 20000) S.log = S.log.slice(-15000);
@@ -822,6 +914,7 @@ function walkForgot(w) {
   // 排進今天的複習：已在長期複習的卡，提前到現在
   for (const c of Object.values(it.cards)) if (c.state === 'review' && c.due > now()) c.due = now();
   it.walkFlags = (it.walkFlags || 0) + 1;
+  touch(it);
   save(); updateBadge();
   const b = $('#wforgot'); if (b) { b.classList.add('done'); b.textContent = '✓ 已排進複習'; }
 }
@@ -869,6 +962,30 @@ function renderSettings() {
   const isStandalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   $('#settings').innerHTML = `
     ${isStandalone ? '' : `<div class="card how"><b>加入主畫面（iPhone）</b><ol><li>用 <b>Safari</b> 打開這個網址</li><li>點下方的「分享」按鈕 <span style="font-size:18px">⎋</span></li><li>選「<b>加入主畫面</b>」</li></ol>之後從主畫面圖示打開，就像一般 App，也可以離線查字。</div>`}
+    <div class="set-h">雲端同步（電腦 ↔ 手機）</div>
+    <div class="set-group">
+      ${S.sync && S.sync.gistId ? `
+        <div class="set-row"><label>已連接 GitHub<small id="sync-status"></small></label><button class="btn ghost" id="s-sync" style="padding:6px 12px">立即同步</button></div>
+        <div class="set-row"><label>中斷連接<small>只會移除這台裝置上的金鑰，雲端資料保留</small></label><button class="btn danger" id="s-unsync" style="padding:6px 12px">中斷</button></div>`
+      : `<div class="how" style="padding:12px 0">
+          單字冊會存一份到你 GitHub 帳號裡的<b>私人</b>檔案（Gist），電腦和手機各連一次就會自動同步。
+          <ol>
+            <li>打開 <a class="link" href="https://github.com/settings/tokens/new?scopes=gist&description=%E5%96%AE%E5%AD%97%E5%86%8A%E5%90%8C%E6%AD%A5" target="_blank" rel="noopener">GitHub 產生金鑰頁面</a>（已幫你勾好 <b>gist</b> 權限）</li>
+            <li>Expiration 選 <b>No expiration</b>（或你想要的期限），按最下面 <b>Generate token</b></li>
+            <li>複製 ghp_ 開頭的金鑰，貼到下面。<b>電腦和手機都要各貼一次</b></li>
+          </ol>
+          <span class="muted">金鑰只存在這台裝置，不會出現在備份檔裡。這把金鑰只能讀寫 Gist，不能動你的程式碼。</span>
+        </div>
+        <div class="set-row"><input type="password" id="s-token" placeholder="貼上金鑰 ghp_…" style="flex:1;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px 10px;font-size:15px" autocomplete="off"><button class="btn" id="s-connect" style="padding:8px 14px">連接</button></div>`}
+    </div>
+    ${matchMedia('(pointer: fine)').matches ? `
+    <div class="set-h">Netflix 一鍵收藏（電腦）</div>
+    <div class="set-group"><div class="how" style="padding:12px 0">
+      把這個按鈕<b>拖曳到 Chrome 的書籤列</b>：<br>
+      <a class="btn ghost" id="s-bm" style="margin:10px 0;cursor:grab" href="#">⭐ 收藏字幕</a><br>
+      看 Netflix（開著雙語字幕）遇到不懂的字，按一下書籤：影片會暫停，這裡會跳出整句英文＋中文字幕，劇名、集數和時間點都自動記好，點不懂的字就能查。
+      <div class="muted">書籤列沒出現的話，按 Ctrl+Shift+B 打開。</div>
+    </div></div>` : ''}
     <div class="set-h">複習</div>
     <div class="set-group">
       <div class="set-row"><label>每天新卡片上限<small>每種卡各算一次。看劇查很多字時，可以避免複習量爆炸</small></label><input type="number" id="s-new" min="1" max="100" value="${st.newPerDay}"></div>
@@ -898,6 +1015,11 @@ function renderSettings() {
     <input type="file" id="s-file" accept=".json,application/json" hidden>
     <p class="muted" style="text-align:center">字典資料：ECDICT（MIT 授權）・英英解釋：Free Dictionary API<br>單字 ${Object.keys(S.words).length} 個・離線字典 ${KEYS ? KEYS.length.toLocaleString() : '載入中'} 筆</p>`;
   const set = (k, v) => { st[k] = v; save(); };
+  const bm = $('#s-bm');
+  if (bm) { bm.setAttribute('href', bookmarkletCode()); bm.onclick = e => { e.preventDefault(); toast('請用拖曳的，把它拉到書籤列'); }; }
+  if ($('#s-connect')) $('#s-connect').onclick = () => { $('#s-connect').disabled = true; $('#s-connect').textContent = '連接中…'; syncConnect($('#s-token').value); };
+  if ($('#s-sync')) { $('#s-sync').onclick = () => syncNow(true); renderSyncStatus(); }
+  if ($('#s-unsync')) $('#s-unsync').onclick = () => { if (confirm('確定要中斷這台裝置的同步嗎？')) { S.sync = null; save(); renderSettings(); } };
   $('#s-new').onchange = e => set('newPerDay', Math.max(1, Math.min(100, +e.target.value || 15)));
   $('#s-ret').onchange = e => set('retention', +e.target.value);
   $('#s-auto').onchange = e => set('autoSpeak', e.target.checked);
@@ -927,7 +1049,7 @@ async function shareOrDownload(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 function exportJSON() {
-  const data = JSON.stringify({ app: 'wordbook', version: 1, exported: new Date().toISOString(), ...S });
+  const data = JSON.stringify({ app: 'wordbook', version: 1, exported: new Date().toISOString(), ...S, sync: undefined });
   shareOrDownload(`單字冊備份-${dayKey(now())}.json`, data, 'application/json');
 }
 function exportCSV() {
@@ -965,6 +1087,146 @@ function importJSON(e) {
   e.target.value = '';
 }
 
+/* ---------- Netflix 一鍵收藏（書籤小工具） ---------- */
+// 在 Netflix 播放頁按書籤：讀出雙語字幕擴充功能畫的英／中字幕、劇名、秒數，傳到這裡
+function bookmarkletCode() {
+  const app = location.origin + location.pathname;
+  const src = `(()=>{const g=s=>((document.querySelector(s)||{}).innerText||'').trim();let en=g('#mainSub'),zh=g('#secondSub');if(!en)en=g('.player-timedtext');if(!en){alert('現在畫面上沒有字幕');return}let ti='';for(const e of document.querySelectorAll('span,h4,div')){if(e.children.length)continue;const t=(e.innerText||'').trim();if(/第\\s*\\d+\\s*集/.test(t)&&t.length<80){ti=t;break}}const v=document.querySelector('video');const m=location.pathname.match(/watch\\/(\\d+)/);if(v)v.pause();window.open(${JSON.stringify(app)}+'#cap='+encodeURIComponent(JSON.stringify({en,zh,ti,nf:m?m[1]:'',t:v?Math.floor(v.currentTime):0})),'wordbook')})()`;
+  return 'javascript:' + encodeURIComponent(src);
+}
+function parseNfTitle(ti) {
+  if (!ti) return {};
+  const m = ti.match(/^(.*?)\s*(第\s*\d+\s*季\s*)?第\s*(\d+)\s*集/);
+  if (!m) return { src: ti.split(/[：:]/)[0].trim() };
+  const season = m[2] ? m[2].match(/\d+/)[0] : '';
+  return { src: m[1].trim(), ep: (season ? 'S' + season.padStart(2, '0') : '') + 'E' + m[3].padStart(2, '0') };
+}
+function handleCapture() {
+  const h = location.hash;
+  if (!h.startsWith('#cap=')) return;
+  history.replaceState(null, '', location.pathname);
+  let d; try { d = JSON.parse(decodeURIComponent(h.slice(5))); } catch { return; }
+  if (!d.en) return;
+  S.nfTitles = S.nfTitles || {};
+  let meta = parseNfTitle(d.ti);
+  if (d.nf) { if (meta.src) S.nfTitles[d.nf] = meta; else meta = S.nfTitles[d.nf] || {}; save(); }
+  show('search');
+  setSentence(d.en + '\n' + (d.zh || ''));
+  Object.assign(curSentence, { src: meta.src || '', ep: meta.ep || '', nf: d.nf || '', t: d.t || 0 });
+  window.focus();
+}
+window.addEventListener('hashchange', handleCapture);
+
+/* ---------- 雲端同步（GitHub 私人 Gist） ---------- */
+const SYNC_FILE = 'wordbook.json';
+let syncing = false, syncTimer = null;
+function scheduleSync(delay = 8000) {
+  if (!S.sync || !S.sync.gistId) return;
+  clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(), delay);
+}
+async function gh(path, opts = {}) {
+  const r = await fetch('https://api.github.com' + path, {
+    ...opts,
+    headers: { Authorization: 'Bearer ' + S.sync.token, Accept: 'application/vnd.github+json', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) }
+  });
+  if (r.status === 401) throw new Error('金鑰無效或已過期，請重新連接');
+  if (r.status === 403 || r.status === 404) throw new Error('金鑰沒有 Gist 權限，或同步檔被刪除了');
+  if (!r.ok) throw new Error('GitHub 回應錯誤 ' + r.status);
+  return r.json();
+}
+function syncPayload() {
+  const words = {};
+  for (const [w, it] of Object.entries(S.words)) { const { en, ...rest } = it; words[w] = rest; } // 英英解釋可以重抓，不同步以節省空間
+  return { app: 'wordbook', v: 2, at: now(), words, deleted: S.deleted, log: S.log, daily: S.daily, nfTitles: S.nfTitles || {} };
+}
+function hashStr(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = (h * 33 ^ s.charCodeAt(i)) >>> 0; return h + ':' + s.length; }
+function ctxKey(c) { return (c.sentence || '') + '|' + (c.source || '') + '|' + (c.ep || ''); }
+function mergeContexts(a, b) {
+  const seen = new Set(a.map(ctxKey)), out = a.slice();
+  for (const c of b || []) if (!seen.has(ctxKey(c))) { out.push(c); seen.add(ctxKey(c)); }
+  return out.sort((x, y) => (x.at || 0) - (y.at || 0));
+}
+// 合併規則：同一個字取最後修改的那份（出處兩邊聯集）；刪除比修改晚才算數
+function mergeRemote(r) {
+  let changed = 0;
+  for (const [w, t] of Object.entries(r.deleted || {})) if (t > (S.deleted[w] || 0)) S.deleted[w] = t;
+  for (const [w, rw] of Object.entries(r.words || {})) {
+    const lw = S.words[w];
+    const rmod = rw.mod || rw.added || 0;
+    if (!lw) { if (rmod > (S.deleted[w] || 0)) { S.words[w] = rw; changed++; } continue; }
+    const lmod = lw.mod || lw.added || 0;
+    if (rmod > lmod) { S.words[w] = { ...rw, en: lw.en, contexts: mergeContexts(rw.contexts || [], lw.contexts) }; changed++; }
+    else lw.contexts = mergeContexts(lw.contexts, rw.contexts);
+  }
+  for (const [w, t] of Object.entries(S.deleted)) { const it = S.words[w]; if (it && t > (it.mod || it.added || 0)) { delete S.words[w]; changed++; } }
+  if (Array.isArray(r.log)) {
+    const seen = new Set(S.log.map(l => l.t + l.w + l.k));
+    for (const l of r.log) if (!seen.has(l.t + l.w + l.k)) S.log.push(l);
+    S.log.sort((a, b) => a.t - b.t);
+  }
+  for (const [k, v] of Object.entries(r.daily || {})) {
+    const cur = S.daily[k] || (S.daily[k] = { newRec: 0, newExtra: 0, reviews: 0 });
+    for (const f of ['newRec', 'newExtra', 'reviews']) cur[f] = Math.max(cur[f] || 0, v[f] || 0);
+  }
+  S.nfTitles = { ...(r.nfTitles || {}), ...(S.nfTitles || {}) };
+  return changed;
+}
+async function syncNow(manual) {
+  if (!S.sync || !S.sync.token || !S.sync.gistId || syncing) return;
+  if (!navigator.onLine) { if (manual) toast('離線中，連上網路後會自動同步'); return; }
+  syncing = true; renderSyncStatus();
+  try {
+    const g = await gh('/gists/' + S.sync.gistId);
+    const f = g.files[SYNC_FILE];
+    let txt = f && f.content;
+    if (f && f.truncated) txt = await (await fetch(f.raw_url)).text();
+    const changed = txt ? mergeRemote(JSON.parse(txt)) : 0;
+    const payload = syncPayload();
+    const h = hashStr(JSON.stringify({ ...payload, at: 0 }));
+    if (h !== S.sync.lastHash || changed) { // 沒有變動就不上傳
+      await gh('/gists/' + S.sync.gistId, { method: 'PATCH', body: JSON.stringify({ files: { [SYNC_FILE]: { content: JSON.stringify(payload) } } }) });
+      S.sync.lastHash = h;
+    }
+    S.sync.last = now(); S.sync.error = '';
+    save(); updateBadge();
+    if (changed) { if (currentView === 'book') renderBook(); if (currentView === 'review' && !session) renderReviewHome(); }
+    if (manual) toast(changed ? `同步完成，更新了 ${changed} 個字` : '同步完成');
+  } catch (e) {
+    S.sync.error = e.message; save();
+    if (manual) toast('同步失敗：' + e.message);
+  } finally { syncing = false; renderSyncStatus(); }
+}
+async function syncConnect(token) {
+  token = token.trim();
+  if (!token) return;
+  S.sync = { token };
+  try {
+    let id = null;
+    for (let page = 1; page <= 10 && !id; page++) {
+      const list = await gh('/gists?per_page=100&page=' + page);
+      if (!list.length) break;
+      const hit = list.find(x => x.files && x.files[SYNC_FILE]);
+      if (hit) id = hit.id;
+    }
+    if (!id) {
+      const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: '我的單字冊 同步資料（請勿手動修改）', public: false, files: { [SYNC_FILE]: { content: JSON.stringify(syncPayload()) } } }) });
+      id = g.id;
+    }
+    S.sync.gistId = id; save();
+    await syncNow(true);
+  } catch (e) { S.sync = null; save(); toast('連接失敗：' + e.message); }
+  renderSettings();
+}
+function renderSyncStatus() {
+  const el = $('#sync-status'); if (!el || !S.sync) return;
+  el.textContent = syncing ? '同步中…' : S.sync.error ? '⚠︎ ' + S.sync.error : S.sync.last ? '上次同步：' + (now() - S.sync.last < 60e3 ? '剛剛' : FSRS.fmtDelay(now() - S.sync.last) + '前') : '尚未同步';
+}
+document.addEventListener('visibilitychange', () => {
+  if (!S.sync || !S.sync.gistId) return;
+  if (document.visibilityState === 'hidden') { clearTimeout(syncTimer); syncNow(); }
+  else syncNow();
+});
+
 /* ---------- 啟動 ---------- */
 (async function init() {
   try {
@@ -976,9 +1238,11 @@ function importJSON(e) {
   updateBadge();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
   $('#search-empty').hidden = false;
-  try { await loadDict(); renderRecent(); if (qEl.value) renderSuggest(); }
+  try { await loadDict(); renderRecent(); if (qEl.value) renderSuggest(); handleCapture(); }
   catch { toast('字典載入失敗，請連上網路後重開'); }
   updateBadge();
+  syncNow();
+  setInterval(() => { if (document.visibilityState === 'visible') syncNow(); }, 5 * 60e3);
   setInterval(updateBadge, 60e3);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => { });
 })();

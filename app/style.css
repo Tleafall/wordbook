@@ -207,3 +207,14 @@ select#booksort { background: var(--card); font-size: 14px; padding: 8px 12px; }
 .ctx-item .src { font-size: 12px; color: var(--ink3); margin-top: 3px; }
 
 #toast { position: fixed; left: 50%; bottom: calc(90px + var(--safe-b)); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px; z-index: 40; max-width: 88vw; text-align: center; }
+
+/* 貼上整句 */
+.sent-en { font-size: 22px; line-height: 1.7; word-break: break-word; }
+.sent-en .tok { font: inherit; padding: 0 2px; margin: 0 -1px; border-radius: 6px; border-bottom: 2px dotted var(--line); }
+.sent-en .tok:hover { background: var(--accent-soft); }
+.sent-en .tok.on { background: var(--accent); color: #fff; border-color: transparent; }
+.sent-en .tok.known { border-bottom-color: var(--good); }
+.sent-zh { font-size: 17px; color: var(--ink2); margin-top: 6px; }
+.sent-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+.ctx-zh { color: var(--ink2); font-size: 14px; margin-top: 2px; }
+.tags button.tag { cursor: pointer; }
