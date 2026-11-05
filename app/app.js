@@ -257,11 +257,12 @@ function addWord(w, entry, extra) {
   save();
   return item;
 }
-function addContext(item, { sentence, zh, source, ep, note, nf, t, sense }) {
+function addContext(item, { sentence, zh, source, ep, note, nf, url, t, sense }) {
   touch(item);
   if (sentence || source || ep || zh || sense) {
     const c = { sentence: (sentence || '').trim(), zh: (zh || '').trim(), source: (source || '').trim(), ep: (ep || '').trim(), sense: (sense || '').trim(), at: now() };
     if (nf) { c.nf = String(nf); c.t = Math.max(0, Math.floor(t || 0) - 3); } // Netflix 影片編號與秒數，可跳回那一幕
+    else if (url) { c.url = url; if (t) c.t = Math.max(0, Math.floor(t) - 3); }  // 網頁／YouTube 出處
     item.contexts.push(c);
     refreshMeaning(item);
   }
@@ -340,9 +341,15 @@ function highlight(sentence, word) {
   try { return s.replace(new RegExp('\\b(' + stem + ')', 'ig'), '<em>$1</em>'); } catch { return s; }
 }
 function sceneLink(c) {
-  if (!c || !c.nf) return '';
-  const m = Math.floor((c.t || 0) / 60), s = String((c.t || 0) % 60).padStart(2, '0');
-  return ` <a class="link" target="_blank" rel="noopener" href="https://www.netflix.com/watch/${encodeURIComponent(c.nf)}?t=${c.t || 0}">▶︎ 回到這一幕 ${m}:${s}</a>`;
+  if (!c) return '';
+  const mmss = t => Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+  if (c.nf) return ` <a class="link" target="_blank" rel="noopener" href="https://www.netflix.com/watch/${encodeURIComponent(c.nf)}?t=${c.t || 0}">▶︎ 回到這一幕 ${mmss(c.t || 0)}</a>`;
+  if (c.url && /^https?:\/\//.test(c.url)) {
+    const yt = /youtube\.com\/watch/.test(c.url);
+    const href = yt && c.t ? c.url + '&t=' + c.t + 's' : c.url;
+    return ` <a class="link" target="_blank" rel="noopener" href="${esc(href)}">${yt ? '▶︎ 回到這一幕 ' + mmss(c.t || 0) : '↗ 回到原文'}</a>`;
+  }
+  return '';
 }
 function clozeOf(sentence, word) {
   const html = highlight(sentence, word);
@@ -452,6 +459,15 @@ function tapToken(i) {
   doLookup(words[k], { keepSentence: true });
 }
 $('#qclear').style.visibility = 'hidden';
+// 📋 一鍵貼上剪貼簿：整句 → 句子模式；一個字 → 直接查
+$('#qpaste').onclick = async () => {
+  let t = '';
+  try { t = await navigator.clipboard.readText(); } catch { toast('沒辦法讀剪貼簿，請長按輸入框貼上'); return; }
+  t = (t || '').trim();
+  if (!t) { toast('剪貼簿是空的'); return; }
+  if (isSentence(t)) { qEl.value = ''; setSentence(t); }
+  else doLookup(t);
+};
 
 function renderSuggest() {
   const p = norm(qEl.value);
@@ -577,7 +593,7 @@ function openAddSheet(w, existing) {
     });
     body.querySelector('#f-save').onclick = () => {
       const sense = $('#f-sense').value.replace(/[,，;；]/g, '、').replace(/\s*、\s*/g, '、').trim();
-      const extra = { source: $('#f-src').value, ep: $('#f-ep').value, sentence: $('#f-sent').value, zh: $('#f-zh').value, note: $('#f-note').value, nf: curSentence?.nf, t: curSentence?.t, sense };
+      const extra = { source: $('#f-src').value, ep: $('#f-ep').value, sentence: $('#f-sent').value, zh: $('#f-zh').value, note: $('#f-note').value, nf: curSentence?.nf, url: curSentence?.url, t: curSentence?.t, sense };
       if (existing) { addContext(getWord(w), extra); save(); toast('已記下'); }
       else {
         const item = addWord(w, $('#result')._entry, extra);
@@ -1046,11 +1062,13 @@ function renderSettings() {
         <div class="set-row"><input type="password" id="s-token" placeholder="貼上金鑰 ghp_…" style="flex:1;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px 10px;font-size:15px" autocomplete="off"><button class="btn" id="s-connect" style="padding:8px 14px">連接</button></div>`}
     </div>
     ${matchMedia('(pointer: fine)').matches ? `
-    <div class="set-h">Netflix 一鍵收藏（電腦）</div>
+    <div class="set-h">一鍵收藏書籤（電腦）</div>
     <div class="set-group"><div class="how" style="padding:12px 0">
       把這個按鈕<b>拖曳到 Chrome 的書籤列</b>：<br>
       <a class="btn ghost" id="s-bm" style="margin:10px 0;cursor:grab" href="#">⭐ 收藏字幕</a><br>
-      看 Netflix（開著雙語字幕）遇到不懂的字，按一下書籤：影片會暫停，這裡會跳出整句英文＋中文字幕，劇名、集數和時間點都自動記好，點不懂的字就能查。
+      <b>Netflix</b>（開著雙語字幕）：遇到不懂的字按一下書籤，影片會暫停，這裡跳出整句英文＋中文字幕，劇名、集數、時間點都自動記好。<br>
+      <b>YouTube</b>：打開 CC 字幕後按書籤，抓當下那句字幕和時間點。<br>
+      <b>其他網頁</b>：先選取一句英文（或只選一個字，會自動抓整句）再按書籤，網頁標題和網址會一起記下，之後可以回到原文。
       <div class="muted">書籤列沒出現的話，按 Ctrl+Shift+B 打開。</div>
     </div></div>` : ''}
     <div class="set-h">複習</div>
@@ -1156,10 +1174,65 @@ function importJSON(e) {
 
 /* ---------- Netflix 一鍵收藏（書籤小工具） ---------- */
 // 在 Netflix 播放頁按書籤：讀出雙語字幕擴充功能畫的英／中字幕、劇名、秒數，傳到這裡
+// 書籤本體：在 Netflix／YouTube／任何網頁上執行。不能用到外面的變數（會被轉成文字塞進書籤）
+function captureFn(APP) {
+  var txt = function (s) { return ((document.querySelector(s) || {}).innerText || '').trim(); };
+  var v = document.querySelector('video');
+  var send = function (d) { window.open(APP + '#cap=' + encodeURIComponent(JSON.stringify(d)), 'wordbook'); };
+  var host = location.hostname;
+  var sel = String(window.getSelection() || '').trim();
+  /* Netflix：讀雙語字幕擴充功能的英／中字幕 */
+  if (/netflix\.com$/.test(host) && /\/watch\//.test(location.pathname) && !sel) {
+    var en = txt('#mainSub'), zh = txt('#secondSub');
+    if (!en) en = txt('.player-timedtext');
+    if (!en) { alert('現在畫面上沒有字幕'); return; }
+    var m = location.pathname.match(/watch\/(\d+)/), src = '', ep = '';
+    try {
+      var id = +m[1], vd = netflix.appContext.state.playerApp.getState().videoPlayer.videoMetadata[id]._metadataObject.video;
+      src = vd.title || '';
+      (vd.seasons || []).forEach(function (s) { (s.episodes || []).forEach(function (e) { if ((e.id || e.episodeId) == id) ep = 'S' + String(s.seq).padStart(2, '0') + 'E' + String(e.seq).padStart(2, '0'); }); });
+    } catch (x) { }
+    if (v) v.pause();
+    send({ en: en, zh: zh, src: src, ep: ep, nf: m ? m[1] : '', t: v ? Math.floor(v.currentTime) : 0 });
+    return;
+  }
+  /* YouTube：讀 CC 字幕 */
+  if (/(^|\.)youtube\.com$/.test(host) && !sel) {
+    var segs = Array.prototype.map.call(document.querySelectorAll('.ytp-caption-segment'), function (e) { return e.innerText.trim(); });
+    var cap = segs.join(' ').trim();
+    if (!cap) { alert('現在畫面上沒有字幕（請先打開 YouTube 的 CC 字幕），或先選取一段文字'); return; }
+    var vid = new URLSearchParams(location.search).get('v'), t = v ? Math.floor(v.currentTime) : 0;
+    if (v) v.pause();
+    send({ en: cap, src: txt('h1.ytd-watch-metadata') || document.title.replace(/\s*-\s*YouTube$/, ''), url: vid ? 'https://www.youtube.com/watch?v=' + vid : location.href.split('#')[0], t: t });
+    return;
+  }
+  /* 其他網頁：用選取的文字；只選一個字時，抓它所在的整句 */
+  if (!sel) { alert('請先選取一句英文（或一個字）再按書籤'); return; }
+  var text = sel.replace(/\s+/g, ' '), hl = '';
+  if (text.split(' ').length <= 3) {
+    hl = text;
+    try {
+      var r = window.getSelection().getRangeAt(0);
+      var el = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement;
+      el = el.closest('p,li,td,th,blockquote,dd,dt,figcaption,h1,h2,h3,h4,h5,h6') || el.parentElement || el;
+      var full = (el.innerText || '').replace(/\s+/g, ' ');
+      var i = full.indexOf(text);
+      if (i >= 0) {
+        var pre = full.slice(0, i), a = 0, re = /[.!?。！？]["”’)\]]*\s+/g, mm;
+        while ((mm = re.exec(pre))) a = mm.index + mm[0].length;
+        var post = full.slice(i + text.length), k = post.search(/[.!?。！？]["”’)\]]*(\s|$)/);
+        var b = k < 0 ? full.length : i + text.length + k + (post.slice(k).match(/^[.!?。！？]["”’)\]]*/) || [''])[0].length;
+        var s2 = full.slice(a, b).trim();
+        if (s2.length <= 500) text = s2;
+      }
+    } catch (x) { }
+  }
+  var title = document.title.replace(/\s*[|\-–—:]\s*[^|\-–—:]{1,30}$/, '').trim() || host;
+  send({ en: text.slice(0, 600), hl: hl, src: title.slice(0, 60), url: location.href.split('#')[0] });
+}
 function bookmarkletCode() {
   const app = location.origin + location.pathname;
-  const src = `(()=>{const g=s=>((document.querySelector(s)||{}).innerText||'').trim();let en=g('#mainSub'),zh=g('#secondSub');if(!en)en=g('.player-timedtext');if(!en){alert('現在畫面上沒有字幕');return}let ti='';for(const e of document.querySelectorAll('span,h4,div')){if(e.children.length)continue;const t=(e.innerText||'').trim();if(/第\\s*\\d+\\s*集/.test(t)&&t.length<80){ti=t;break}}const v=document.querySelector('video');const m=location.pathname.match(/watch\\/(\\d+)/);let src='',ep='';try{const id=+m[1];const vd=netflix.appContext.state.playerApp.getState().videoPlayer.videoMetadata[id]._metadataObject.video;src=vd.title||'';for(const s of vd.seasons||[])for(const e of s.episodes||[])if((e.id||e.episodeId)==id)ep='S'+String(s.seq).padStart(2,'0')+'E'+String(e.seq).padStart(2,'0')}catch(x){}if(v)v.pause();window.open(${JSON.stringify(app)}+'#cap='+encodeURIComponent(JSON.stringify({en,zh,ti,src,ep,nf:m?m[1]:'',t:v?Math.floor(v.currentTime):0})),'wordbook')})()`;
-  return 'javascript:' + encodeURIComponent(src);
+  return 'javascript:' + encodeURIComponent('(' + captureFn.toString() + ')(' + JSON.stringify(app) + ')');
 }
 function parseNfTitle(ti) {
   if (!ti) return {};
@@ -1179,7 +1252,15 @@ function handleCapture() {
   if (d.nf) { if (meta.src) S.nfTitles[d.nf] = meta; else meta = S.nfTitles[d.nf] || {}; save(); }
   show('search');
   setSentence(d.en + '\n' + (d.zh || ''));
-  Object.assign(curSentence, { src: meta.src || '', ep: meta.ep || '', nf: d.nf || '', t: d.t || 0 });
+  if (!curSentence) return;
+  const url = /^https?:\/\//.test(d.url || '') ? d.url : '';
+  Object.assign(curSentence, { src: meta.src || '', ep: meta.ep || '', nf: /^\d+$/.test(d.nf || '') ? d.nf : '', url, t: +d.t || 0 });
+  // 在網頁上只選了一個字：直接幫你查那個字
+  if (d.hl) {
+    const first = norm(d.hl).split(' ')[0];
+    const idx = curSentence.tokens.findIndex(tk => norm(tk.replace(/’/g, "'")) === first);
+    if (idx >= 0) tapToken(idx); else doLookup(d.hl, { keepSentence: true });
+  }
   window.focus();
 }
 window.addEventListener('hashchange', handleCapture);

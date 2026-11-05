@@ -229,3 +229,5 @@ details summary { cursor: pointer; font-size: 13px; }
 mark.hit { background: #ffe58a; color: #1d1d1f; font-weight: 700; border-radius: 4px; padding: 0 4px; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) mark.hit { background: #c9a227; color: #111; } }
 :root[data-theme="dark"] mark.hit { background: #c9a227; color: #111; }
+.searchbox input { padding-right: 76px; }
+.iconbtn.paste { right: 40px; font-size: 17px; filter: grayscale(.3); }
