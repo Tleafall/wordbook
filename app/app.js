@@ -50,7 +50,7 @@ function touch(item) { item.mod = now(); scheduleSync(); }
 /* ---------- 離線字典 ---------- */
 let DICT = null, KEYS = null;
 async function loadDict() {
-  const r = await fetch('dict.json?v=2'); // 字典更新時改這個版本號
+  const r = await fetch('dict.json?v=3'); // 字典更新時改這個版本號
   // 第一次下載約 3MB，顯示進度；之後從手機快取讀，很快
   const EST = 7.9e6;
   let text;
@@ -149,12 +149,34 @@ function shortZh(zh, n = 3) {
   if (!zh) return '';
   const lines = zh.split('\n').filter(l => !/^\[(網路|网络)\]/.test(l));
   const parts = [];
+  const cjk = x => (x.match(/[一-鿿]/g) || []).length;
   for (const l of (lines.length ? lines : zh.split('\n'))) {
-    const body = l.replace(/^[a-z]+\.\s*/i, '').replace(/^\[[^\]]+\]\s*/, '').replace(/[（(][^）)]*[）)]/g, '');
-    for (const p of body.split(/[,，；;、]/)) { const t = p.trim(); if (t && !parts.includes(t)) parts.push(t); if (parts.length >= n) break; }
+    const body = l.replace(/^[a-z]+\.\s*/i, '').replace(/^\[[^\]]+\]\s*/, '');
+    // 括號通常是補充說明，先拿掉；但如果括號外幾乎沒東西（例如「嗯（表示遲疑）」），意思其實在括號裡，就保留
+    const inside = (body.match(/[（(][^）)]*[）)]/g) || []).join(' ').replace(/[（()）]/g, '').trim();
+    const outside = body.replace(/[（(][^）)]*[）)]/g, '');
+    const core = outside.replace(/[,，;；、\s]/g, '');
+    if (cjk(core) <= 1 && cjk(inside) >= 4) {
+      const t = core ? core + '（' + inside + '）' : inside;
+      if (!parts.includes(t)) parts.push(t);
+    } else {
+      for (const t of splitSenses(outside, true)) { if (!parts.includes(t)) parts.push(t); if (parts.length >= n) break; }
+    }
     if (parts.length >= n) break;
   }
   return parts.join('、');
+}
+// 依逗號／分號拆意思，但不拆括號裡面的逗號（例如「（女子名, 等於Joseph）」）
+function splitSenses(body, withDun) {
+  const seps = withDun ? ',，;；、' : ',，;；';
+  const out = []; let depth = 0, cur = '';
+  for (const ch of body) {
+    if ('(（'.includes(ch)) depth++;
+    else if (')）'.includes(ch)) depth = Math.max(0, depth - 1);
+    if (depth === 0 && seps.includes(ch)) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  out.push(cur);
+  return out.map(x => x.trim()).filter(Boolean);
 }
 
 // 把字典解釋拆成一個個意思，給「這句的意思」點選
@@ -164,7 +186,7 @@ function senseList(zh) {
     const m = l.match(/^([a-z]+\.)\s*(.*)$/i);
     const pos = m ? m[1] : '', body = (m ? m[2] : l).trim();
     if (/^\[[^\]]+\]/.test(body)) continue;
-    for (const p of body.split(/[,，；;]/)) { const t = p.trim(); if (t && !out.some(o => o.t === t)) out.push({ pos, t }); }
+    for (const t of splitSenses(body)) { if (!out.some(o => o.t === t)) out.push({ pos, t }); }
   }
   return out;
 }
@@ -184,7 +206,7 @@ function sensesHtml(zh, meaning) {
   const lines = (zh || '').split('\n').map(l => {
     const m = l.match(/^([a-z]+\.)\s*(.*)$/i);
     const pos = m ? m[1] : '', body = m ? m[2] : l;
-    const items = body.split(/,\s*/).map(t => {
+    const items = splitSenses(body).map(t => {
       const hit = chosen.includes(t.trim());
       if (hit) used.add(t.trim());
       return hit ? `<mark class="hit">${esc(t)}</mark>` : esc(t);
@@ -1741,7 +1763,19 @@ document.addEventListener('visibilitychange', () => {
   try {
     await loadDict();
     // 字典更新後，已收藏的字也換成新版解釋
-    for (const it of Object.values(S.words)) { const e = DICT.e[it.word]; if (e && e[1] && it.zh !== e[1]) it.zh = e[1]; }
+    for (const it of Object.values(S.words)) {
+      const e = own(DICT.e, it.word);
+      if (!e || !e[1] || it.zh === e[1]) continue;
+      // 舊版字典的錯誤意思（例如 what's 的「烏」）如果被選成「這句的意思」，一起拿掉；自己打的意思保留
+      if (it.meaning) {
+        const oldSenses = senseList(it.zh).map(x => x.t), newSenses = senseList(e[1]).map(x => x.t);
+        const clean = str => str.split('、').filter(m => !oldSenses.includes(m) || newSenses.includes(m)).join('、');
+        const keep = clean(it.meaning);
+        if (keep !== it.meaning) { it.meaning = keep; it.mod = now(); }
+        for (const c of it.contexts || []) if (c.sense) c.sense = clean(c.sense);
+      }
+      it.zh = e[1];
+    }
     save();
     renderRecent(); if (qEl.value) renderSuggest(); handleCapture(); }
   catch { toast('字典載入失敗，請連上網路後重開'); }

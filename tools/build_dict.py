@@ -87,6 +87,31 @@ for w in sorted(core | phr):
             if k in 'pdi3rs' and v and v.lower() != w:
                 forms.setdefault(v.lower(), w)
 forms = {k:v for k,v in forms.items() if k not in entries}
+# 常見縮寫：原字典常把意思放在括號裡或混進雜訊（例如 what's 被寫成「…; 烏」），這裡直接給正確解釋
+CONTRACTIONS = {
+    "what's": "what is 或 what has", "it's": "it is 或 it has", "that's": "that is 或 that has",
+    "there's": "there is 或 there has", "here's": "here is", "who's": "who is 或 who has",
+    "where's": "where is", "how's": "how is", "when's": "when is", "why's": "why is",
+    "he's": "he is 或 he has", "she's": "she is 或 she has", "let's": "let us（我們…吧）",
+    "i'm": "I am", "you're": "you are", "we're": "we are", "they're": "they are",
+    "i've": "I have", "you've": "you have", "we've": "we have", "they've": "they have",
+    "i'll": "I will", "you'll": "you will", "he'll": "he will", "she'll": "she will", "it'll": "it will",
+    "we'll": "we will", "they'll": "they will", "that'll": "that will",
+    "i'd": "I would 或 I had", "you'd": "you would 或 you had", "he'd": "he would 或 he had",
+    "she'd": "she would 或 she had", "we'd": "we would 或 we had", "they'd": "they would 或 they had",
+    "isn't": "is not", "aren't": "are not", "wasn't": "was not", "weren't": "were not",
+    "don't": "do not", "doesn't": "does not", "didn't": "did not", "can't": "cannot",
+    "couldn't": "could not", "won't": "will not", "wouldn't": "would not", "shouldn't": "should not",
+    "haven't": "have not", "hasn't": "has not", "hadn't": "had not", "mustn't": "must not",
+    "ain't": "am not／is not／are not（非正式）", "y'all": "you all（你們大家）",
+    "could've": "could have", "would've": "would have", "should've": "should have",
+}
+for w, full in CONTRACTIONS.items():
+    old = entries.get(w)
+    phon = old[0] if old else ''
+    entries[w] = [phon, 'abbr. 縮寫＝' + full, old[2] if old else 0, old[3] if old else 0, '']
+    forms.pop(w, None)
+
 with open(out, 'w', encoding='utf-8') as f:
     json.dump({'e':entries,'f':forms}, f, ensure_ascii=False, separators=(',',':'))
 print(len(core), len(phr), len(forms))
