@@ -262,12 +262,37 @@ async function fetchZhOnline(word) {
 let VOICES = [];
 function loadVoices() { VOICES = speechSynthesis.getVoices(); }
 if ('speechSynthesis' in window) { loadVoices(); speechSynthesis.onvoiceschanged = () => { loadVoices(); if (currentView === 'settings') renderSettings(); }; }
+// iPhone／Mac 內建很多「趣味聲音」（Eddy、Grandma、Bells…），聽起來很怪；自動選聲音時排到最後
+const NOVELTY_VOICE = /eloquence|\b(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Junior|Ralph|Fred|Kathy|Eddy|Flo|Grandma|Grandpa|Reed|Rocko|Sandy|Shelley)\b/i;
+function voiceQuality(v) {
+  const id = (v.voiceURI || '') + ' ' + v.name;
+  if (NOVELTY_VOICE.test(id)) return 'novelty';
+  if (/premium|優化|高品質/i.test(id)) return 'premium';
+  if (/enhanced|增強|加強|neural|natural/i.test(id)) return 'enhanced';
+  return 'normal';
+}
+function voiceScore(v, lang) {
+  const q = voiceQuality(v), id = (v.voiceURI || '') + ' ' + v.name, L = v.lang.replace('_', '-');
+  let s = { novelty: -100, premium: 30, enhanced: 20, normal: 0 }[q];
+  if (/compact/i.test(id)) s -= 3;
+  if (lang === 'en') {
+    s += L === 'en-US' ? 10 : /^en-GB/.test(L) ? 6 : 0;
+    if (/Samantha|Ava|Zoe|Allison|Susan|Nicky|Evan|Nathan|Tom|Alex|Google US English/i.test(id)) s += 5;
+  } else {
+    s += L === 'zh-TW' ? 10 : /^zh-HK/.test(L) ? 3 : 1;
+    if (/Meijia|美佳|Google 國語/i.test(id)) s += 5;
+  }
+  return s;
+}
+function voicesFor(lang) {
+  const re = lang === 'en' ? /^en/i : /^zh/i;
+  return VOICES.filter(v => re.test(v.lang)).sort((a, b) => voiceScore(b, lang) - voiceScore(a, lang));
+}
 function pickVoice(lang) {
   const key = lang === 'en' ? 'enVoice' : 'zhVoice';
   if (S.settings[key]) { const v = VOICES.find(v => v.voiceURI === S.settings[key]); if (v) return v; }
-  const prefs = lang === 'en' ? ['en-US', 'en-GB', 'en'] : ['zh-TW', 'zh-HK', 'zh-CN', 'zh'];
-  for (const p of prefs) { const v = VOICES.find(v => v.lang.replace('_', '-').startsWith(p)); if (v) return v; }
-  return null;
+  const best = voicesFor(lang)[0];
+  return best && voiceQuality(best) !== 'novelty' ? best : (best || null);
 }
 function speak(text, lang = 'en', rate) {
   return new Promise(res => {
@@ -504,6 +529,13 @@ function tapToken(i) {
   doLookup(words[k], { keepSentence: true });
 }
 $('#qclear').style.visibility = 'hidden';
+// 下載 iPhone 的高品質聲音（內建的預設聲音比較生硬）
+const VOICE_GUIDE = `<b>🔈 聲音不好聽？下載 iPhone 的「增強版」聲音（免費）</b>
+  <ol><li>打開 iPhone <b>設定 → 輔助使用 → 朗讀內容 → 聲音</b></li>
+  <li><b>中文</b>：選「中文（台灣）」→ 下載「<b>美佳</b>」的<b>增強／優化</b>版本</li>
+  <li><b>英文</b>：選「英文（美國）」→ 下載 <b>Ava</b>、<b>Zoe</b> 或 <b>Samantha</b> 的<b>增強／優化</b>版本</li>
+  <li>下載完把單字冊完全關掉再打開，回到這裡在「中文聲音／英文聲音」選標著 ★ 的那個</li></ol>
+  <span class="muted">不同 iOS 版本名稱可能是「增強」「優化」或「高品質」。檔案約 100–400MB，建議連 Wi-Fi 下載。</span>`;
 const REVOKE_STEPS = `<ol><li>到 GitHub → 右上角頭像 → <b>Settings</b> → 最下面 <b>Developer settings</b> → <b>Personal access tokens</b></li><li>找到「單字冊同步」那組，按 <b>Delete</b>（刪掉後這組金鑰立刻失效）</li><li>回到單字冊按「中斷」，再產生新的金鑰重新連接</li></ol>`;
 // 「收藏字幕」捷徑的 iCloud 分享連結：在 iPhone 做好捷徑、分享後填進來，設定頁就會出現一鍵安裝
 const SHORTCUT_URL = '';
@@ -645,7 +677,7 @@ async function doLookup(q, opts = {}) {
   const res = $('#result');
   if (!e && !lemma) {
     const fz = fuzzy(w);
-    res.innerHTML = `<div class="card"><div class="word-h"><h2>${esc(w)}</h2><button class="speak" data-say="${esc(w)}">🔊</button></div>
+    res.innerHTML = `<div class="card"><div class="word-h"><h2>${esc(w)}</h2><button class="speak" data-say="${esc(w)}">🔊</button><span id="savetop"></span></div>
       <p class="muted" id="zh-online">離線字典沒有這個字，正在線上查…</p>
       ${fz.length ? `<div class="sec-t">你是不是要找</div><div class="tags">${fz.map(x => `<a class="link tag" data-go="${esc(x)}">${esc(x)}</a>`).join('')}</div>` : ''}
       <div id="en-area"></div>
@@ -664,7 +696,7 @@ async function doLookup(q, opts = {}) {
   res.innerHTML = `
     ${banner ? `<div class="banner">${esc(banner)}</div>` : ''}
     <div class="card">
-      <div class="word-h"><h2>${esc(w)}</h2><button class="speak" data-say="${esc(w)}" aria-label="發音">🔊</button></div>
+      <div class="word-h"><h2>${esc(w)}</h2><button class="speak" data-say="${esc(w)}" aria-label="發音">🔊</button><span id="savetop"></span></div>
       <div class="phon" id="phon">${e.phon ? '/' + esc(e.phon) + '/' : ''}</div>
       <div class="tags">
         ${lv ? `<span class="tag lv">${lv}</span>` : ''}
@@ -699,16 +731,47 @@ function bindResult(w, e) {
 }
 
 function renderAddArea(w) {
-  const area = $('#add-area'); if (!area) return;
+  const area = $('#add-area'), top = $('#savetop');
   const item = getWord(w);
   if (item) {
-    area.innerHTML = `<div class="row"><button class="btn ghost" id="addctx">＋ 記下這次的出處</button><button class="btn plain" id="openword">看單字卡</button></div>`;
-    $('#addctx').onclick = () => openAddSheet(w, true);
-    $('#openword').onclick = () => openWordSheet(w);
+    if (top) { top.innerHTML = `<button class="savebtn saved" id="qs-open">✓ 已存${item.inbox ? '・待整理' : ''}</button>`; $('#qs-open').onclick = () => openWordSheet(w); }
+    if (area) {
+      area.innerHTML = `<div class="row"><button class="btn ghost" id="addctx">＋ 記下這次的出處</button><button class="btn plain" id="openword">${item.inbox ? '整理這個字' : '看單字卡'}</button></div>`;
+      $('#addctx').onclick = () => openAddSheet(w, true);
+      $('#openword').onclick = () => openWordSheet(w);
+    }
   } else {
-    area.innerHTML = `<button class="btn block" id="addbtn">⭐ 加入單字冊</button>`;
-    $('#addbtn').onclick = () => openAddSheet(w, false);
+    if (top) { top.innerHTML = `<button class="savebtn" id="qs">⭐ 存起來</button>`; $('#qs').onclick = () => quickSave(w); }
+    if (area) {
+      area.innerHTML = `<button class="btn block ghost" id="addbtn">⭐ 存起來，並填寫出處、意思</button>
+        <p class="muted" style="text-align:center;margin:8px 0 0">趕著追劇？按上面的「⭐ 存起來」就好，之後到「單字冊 → 待整理」再選意思。</p>`;
+      $('#addbtn').onclick = () => openAddSheet(w, false);
+    }
   }
+}
+// 記住 Netflix 影片編號對應的劇名（使用者真的存字時才記）
+function rememberNf() {
+  if (curSentence?.nf && /^\d{1,12}$/.test(curSentence.nf) && curSentence.src) {
+    S.nfTitles = S.nfTitles || {};
+    S.nfTitles[curSentence.nf] = { src: String(curSentence.src).slice(0, 100), ep: String(curSentence.ep || '').slice(0, 20) };
+  }
+}
+// ⭐ 一鍵先存：不填任何東西，台詞／劇名有就自動帶入，意思之後再整理
+function quickSave(w) {
+  const entry = $('#result')._entry; if (!entry) return;
+  let extra = null;
+  if (curSentence) {
+    const senses = senseList(entry.zh || '');
+    const sense = guessSenses(senses, curSentence.zh).map(i => senses[i].t).join('、');
+    extra = { sentence: curSentence.en, zh: curSentence.zh, source: curSentence.src || S.lastSource || '', ep: curSentence.ep || S.lastEp || '', nf: curSentence.nf, url: curSentence.url, t: curSentence.t, sense };
+    rememberNf();
+  }
+  const item = addWord(w, entry, extra); if (!item) return;
+  item.inbox = true; save();
+  fetchEnglish(w).then(en => { if (en) { item.en = en.meanings.slice(0, 3); save(); } });
+  renderAddArea(w); updateBadge();
+  document.querySelectorAll('#sentence .tok').forEach(b => { if (norm(b.textContent.replace(/’/g, "'")) === w) b.classList.add('known'); });
+  toast('已存起來 ✓ 之後到「單字冊 → 待整理」選意思');
 }
 
 function openAddSheet(w, existing) {
@@ -743,13 +806,11 @@ function openAddSheet(w, existing) {
     body.querySelector('#f-save').onclick = () => {
       const sense = $('#f-sense').value.replace(/[,，;；]/g, '、').replace(/\s*、\s*/g, '、').trim();
       const extra = { source: $('#f-src').value, ep: $('#f-ep').value, sentence: $('#f-sent').value, zh: $('#f-zh').value, note: $('#f-note').value, nf: curSentence?.nf, url: curSentence?.url, t: curSentence?.t, sense };
-      if (curSentence?.nf && /^\d{1,12}$/.test(curSentence.nf) && curSentence.src) {
-        S.nfTitles = S.nfTitles || {};
-        S.nfTitles[curSentence.nf] = { src: String(curSentence.src).slice(0, 100), ep: String(curSentence.ep || '').slice(0, 20) };
-      }
-      if (existing) { addContext(getWord(w), extra); save(); toast('已記下'); }
+      rememberNf();
+      if (existing) { const it0 = getWord(w); addContext(it0, extra); if (sense) it0.inbox = false; save(); toast('已記下'); }
       else {
         const item = addWord(w, $('#result')._entry, extra);
+        if (!item) return;
         fetchEnglish(w).then(en => { if (en) { item.en = en.meanings.slice(0, 3); save(); } });
         toast('已加入單字冊，今天就會開始複習');
       }
@@ -779,11 +840,17 @@ function openWordSheet(w) {
     const due = c.state === 'new' ? '' : (c.due <= t ? '現在該複習' : FSRS.fmtDelay(c.due - t) + '後複習');
     return `<div class="set-row"><label>${TYPES[k]}<small>${st}${c.lapses ? `・忘過 ${c.lapses} 次` : ''}</small></label><span class="muted">${due}</span></div>`;
   }).join('');
+  const senses = senseList(it.zh);
+  const picked = new Set(senses.map((x, i) => (it.meaning || '').split('、').includes(x.t) ? i : -1).filter(i => i >= 0));
+  const ctx0 = it.contexts.find(c => c.sentence);
   openSheet(`
-    <div class="word-h"><h2 style="font-size:28px">${esc(w)}</h2><button class="speak" id="ws-say">🔊</button><span class="tag lv">${STATUS_ZH[wordStatus(it)]}</span></div>
+    <div class="word-h"><h2 style="font-size:28px">${esc(w)}</h2><button class="speak" id="ws-say">🔊</button><span class="tag lv">${it.inbox ? '待整理' : STATUS_ZH[wordStatus(it)]}</span></div>
     ${it.phon ? `<div class="phon">/${esc(it.phon)}/</div>` : ''}
-    <div class="field" style="margin-top:12px"><label>我要記的意思（卡片考這個）</label><input id="ws-meaning" value="${esc(it.meaning || '')}" placeholder="${esc(shortZh(it.zh, 3))}"></div>
-    <div class="zh">${sensesHtml(it.zh, it.meaning)}</div>
+    ${ctx0 ? `<div class="ctx-item" style="margin-top:10px">${highlight(ctx0.sentence, w)}${ctx0.zh ? `<div class="ctx-zh">${esc(ctx0.zh)}</div>` : ''}</div>` : ''}
+    <div class="field" style="margin-top:12px"><label>${it.inbox ? '👉 選這句用到的意思（卡片只考你選的）' : '我要記的意思（卡片考這個）'}</label>
+      <div class="tags" id="ws-senses">${senses.map((x, i) => `<button type="button" class="tag sense ${picked.has(i) ? 'on' : ''}" data-i="${i}"><small>${esc(x.pos)}</small> ${esc(x.t)}</button>`).join('')}</div>
+      <input id="ws-meaning" style="margin-top:8px" value="${esc(it.meaning || '')}" placeholder="或自己寫，例如：論點、理由"></div>
+    <details class="muted"><summary>字典完整解釋</summary><div class="zh">${sensesHtml(it.zh, it.meaning)}</div></details>
     ${it.en ? `<div class="sec-t">英英</div><ul class="en-def">${it.en.map(m => `<li><span class="pos">${esc(m.pos)}</span>${esc(m.defs[0]?.def || '')}${m.defs[0]?.ex ? `<div class="ex">“${esc(m.defs[0].ex)}”</div>` : ''}</li>`).join('')}</ul>` : ''}
     <div class="sec-t">在哪裡看到</div>
     ${it.contexts.length ? it.contexts.map((c, i) => `<div class="ctx-item">${c.sentence ? highlight(c.sentence, w) : '<span class="muted">（沒有記原句）</span>'}${c.zh ? `<div class="ctx-zh">${esc(c.zh)}</div>` : ''}<div class="src">${esc([c.source, c.ep].filter(Boolean).join(' ・ '))}${c.sentence ? ` <button class="link" data-sayctx="${i}">🔊</button>` : ''}${sceneLink(c)}</div></div>`).join('') : '<p class="muted">還沒有記錄。</p>'}
@@ -800,11 +867,18 @@ function openWordSheet(w) {
       if (it.note !== $('#ws-note').value) { it.note = $('#ws-note').value; dirty = true; }
       const mv = $('#ws-meaning').value.replace(/[,，;；]/g, '、').trim();
       if ((it.meaning || '') !== mv) { it.meaning = mv; dirty = true; }
-      if (dirty) { touch(it); save(); }
+      if (it.inbox && mv) { it.inbox = false; dirty = true; } // 選好意思＝整理完成
+      if (dirty) { touch(it); save(); updateBookInboxCount(); }
     };
+    body.querySelectorAll('#ws-senses .sense').forEach(b => b.onclick = () => {
+      const i = +b.dataset.i; picked.has(i) ? picked.delete(i) : picked.add(i);
+      b.classList.toggle('on', picked.has(i));
+      $('#ws-meaning').value = [...picked].sort((a, c) => a - c).map(k => senses[k].t).join('、');
+      saveNote();
+    });
     body.querySelector('#ws-meaning').onchange = saveNote;
     body.querySelector('#ws-note').onchange = saveNote;
-    body.querySelector('#ws-close').onclick = () => { saveNote(); closeSheet(); if (currentView === 'book') renderBook(); };
+    body.querySelector('#ws-close').onclick = () => { saveNote(); closeSheet(); if (currentView === 'book') renderBook(); else if (currentView === 'search') renderAddArea(w); };
     body.querySelector('#ws-ctx').onclick = () => { saveNote(); openAddSheet(w, true); };
     body.querySelector('#ws-del').onclick = () => {
       if (!confirm(`確定要刪除「${w}」和它的複習紀錄嗎？`)) return;
@@ -814,6 +888,12 @@ function openWordSheet(w) {
 }
 
 /* ---------- 單字冊列表 ---------- */
+function updateBookInboxCount() {
+  const b = $('#bookfilter [data-f="inbox"]'); if (!b) return;
+  const n = Object.values(S.words).filter(w => w.inbox).length;
+  b.textContent = n ? `待整理 ${n}` : '待整理';
+  b.classList.toggle('has', n > 0);
+}
 let bookFilter = 'all';
 $$('#bookfilter button').forEach(b => b.onclick = () => { bookFilter = b.dataset.f; $$('#bookfilter button').forEach(x => x.classList.toggle('on', x === b)); renderBook(); });
 $('#booksort').onchange = renderBook;
@@ -827,6 +907,7 @@ function streak() {
   return n;
 }
 function renderBook() {
+  updateBookInboxCount();
   const words = Object.values(S.words);
   const q = queueInfo();
   $('#bookstats').innerHTML = `
@@ -839,6 +920,7 @@ function renderBook() {
     if (kw && !it.word.includes(kw) && !(it.zh || '').includes(kw) && !it.contexts.some(c => (c.source || '').toLowerCase().includes(kw))) return false;
     if (bookFilter === 'all') return true;
     if (bookFilter === 'hard') return lapsesOf(it) >= 2 || (it.lookups || 1) >= 3;
+    if (bookFilter === 'inbox') return !!it.inbox;
     return wordStatus(it) === bookFilter;
   });
   const sort = $('#booksort').value;
@@ -868,7 +950,7 @@ function renderBook() {
     }
     const nd = nextDueOf(it);
     const sub = sort === 'due' ? (it.cards.rec.state === 'new' ? '新字' : nd <= t ? '現在該複習' : FSRS.fmtDelay(nd - t) + '後') : meaningOf(it);
-    html += `<li data-w="${esc(it.word)}"><div class="w"><b>${esc(it.word)}</b><div>${esc(sub)}</div></div>${dotsHtml(it)}</li>`;
+    html += `<li data-w="${esc(it.word)}"><div class="w"><b>${esc(it.word)}</b>${it.inbox ? ' <span class="tag inbox">待整理</span>' : ''}<div>${esc(sub)}</div></div>${dotsHtml(it)}</li>`;
   }
   $('#booklist').innerHTML = html || '<li class="muted">沒有符合的字</li>';
   $$('#booklist li[data-w]').forEach(li => li.onclick = () => openWordSheet(li.dataset.w));
@@ -1257,6 +1339,7 @@ function renderWalkHome() {
       <div class="field"><label>要聽哪些字</label><select id="walkkind">${kinds.map(([v, l]) => `<option value="${v}" ${v === sel ? 'selected' : ''}>${l}（${walkPool(v).length}）</option>`).join('')}</select></div>
       <div class="field"><label>想的時間：<span id="pausev">${S.settings.walkPause}</span> 秒</label><input type="range" id="walkpause" min="1" max="8" step="1" value="${S.settings.walkPause}" style="width:100%"></div>
       <button class="btn block" id="walkstart">▶︎ 開始</button>
+      <div style="text-align:center;margin-top:10px"><button class="link" id="voicehelp">🔈 聲音不好聽？</button></div>
     </div>
     <div class="card how">
       <b>小提醒</b>
@@ -1267,6 +1350,16 @@ function renderWalkHome() {
       </ol>
     </div>`;
   $('#walkpause').oninput = e => { S.settings.walkPause = +e.target.value; $('#pausev').textContent = e.target.value; save(); };
+  $('#voicehelp').onclick = () => {
+    const en = pickVoice('en'), zh = pickVoice('zh');
+    openSheet(`<h3 style="margin-top:0">換一個好聽的聲音</h3>
+      <p class="muted">現在用的：英文「${esc(en ? en.name : '系統預設')}」、中文「${esc(zh ? zh.name : '系統預設')}」</p>
+      <div class="how">${VOICE_GUIDE}</div>
+      <div class="row" style="margin-top:12px"><button class="btn ghost" id="vh-test">▶︎ 試聽</button><button class="btn" id="vh-set">到設定選聲音</button></div>`, body => {
+      body.querySelector('#vh-test').onclick = async () => { speechSynthesis.cancel(); await speak("I can't figure out what he's talking about.", 'en'); await speak('我搞不懂他在說什麼。', 'zh', 1); };
+      body.querySelector('#vh-set').onclick = () => { closeSheet(); show('settings'); setTimeout(() => $('#s-zhv')?.scrollIntoView({ block: 'center' }), 100); };
+    });
+  };
   $('#walkstart').onclick = () => {
     const kind = $('#walkkind').value;
     const list = shuffle(walkPool(kind).map(it => it.word));
@@ -1348,8 +1441,10 @@ async function walkLoop() {
 /* ---------- 設定 ---------- */
 function renderSettings() {
   const st = S.settings;
-  const enV = VOICES.filter(v => /^en/i.test(v.lang)), zhV = VOICES.filter(v => /^zh/i.test(v.lang));
-  const vopts = (list, cur) => `<option value="">自動</option>` + list.map(v => `<option value="${esc(v.voiceURI)}" ${v.voiceURI === cur ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('');
+  const enV = voicesFor('en'), zhV = voicesFor('zh');
+  const QL = { premium: '★ 高品質', enhanced: '★ 增強', normal: '', novelty: '趣味聲音' };
+  const vopts = (list, cur, lang) => { const auto = pickVoice(lang); return `<option value="">自動${auto ? `（${esc(auto.name)}）` : ''}</option>` + list.map(v => `<option value="${esc(v.voiceURI)}" ${v.voiceURI === cur ? 'selected' : ''}>${esc(v.name)}・${esc(v.lang)}${QL[voiceQuality(v)] ? '・' + QL[voiceQuality(v)] : ''}</option>`).join(''); };
+  const hasGoodZh = zhV.some(v => /premium|enhanced/.test(voiceQuality(v))), hasGoodEn = enV.some(v => /premium|enhanced/.test(voiceQuality(v)));
   const isStandalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   $('#settings').innerHTML = `
     ${isStandalone ? '' : `<div class="card how"><b>加入主畫面（iPhone）</b><ol><li>用 <b>Safari</b> 打開這個網址</li><li>點下方的「分享」按鈕 <span style="font-size:18px">⎋</span></li><li>選「<b>加入主畫面</b>」</li></ol>之後從主畫面圖示打開，就像一般 App，也可以離線查字。</div>`}
@@ -1423,11 +1518,12 @@ function renderSettings() {
     <div class="set-h">語音</div>
     <div class="set-group">
       <div class="set-row"><label>語速 <span id="ratev">${st.rate.toFixed(1)}</span></label><input type="range" id="s-rate" min="0.5" max="1.2" step="0.1" value="${st.rate}"></div>
-      <div class="set-row"><label>英文聲音</label><select id="s-env">${vopts(enV, st.enVoice)}</select></div>
-      <div class="set-row"><label>中文聲音</label><select id="s-zhv">${vopts(zhV, st.zhVoice)}</select></div>
+      <div class="set-row"><label>英文聲音</label><select id="s-env">${vopts(enV, st.enVoice, 'en')}</select></div>
+      <div class="set-row"><label>中文聲音</label><select id="s-zhv">${vopts(zhV, st.zhVoice, 'zh')}</select></div>
       <div class="set-row"><label>走路背：念中文意思</label><input type="checkbox" id="s-wzh" ${st.walkZh ? 'checked' : ''}></div>
       <div class="set-row"><label>走路背：念記下的台詞</label><input type="checkbox" id="s-wsent" ${st.walkSentence ? 'checked' : ''}></div>
       <div class="set-row"><label>試聽</label><button class="btn ghost" id="s-test" style="padding:6px 12px">▶︎ 試聽</button></div>
+      ${(!hasGoodZh || !hasGoodEn) ? `<div class="how" style="padding:12px 0">${VOICE_GUIDE}</div>` : ''}
     </div>
     <div class="set-h">外觀</div>
     <div class="set-group">

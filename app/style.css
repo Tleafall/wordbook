@@ -318,3 +318,10 @@ details.adv-sync[open] > summary::after { content: "－"; }
 .warn-box { background: var(--warn-bg); color: var(--warn-ink); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
 .warn-box ul { margin: 6px 0 0; padding-left: 18px; }
 .how code { font-size: 13px; }
+
+/* 一鍵存、待整理 */
+.word-h #savetop { margin-left: auto; }
+.savebtn { padding: 9px 14px; border-radius: 20px; background: var(--accent); color: #fff; font-weight: 700; font-size: 15px; white-space: nowrap; }
+.savebtn.saved { background: var(--accent-soft); color: var(--accent); }
+.tag.inbox { background: var(--warn-bg); color: var(--warn-ink); border-color: transparent; font-size: 11px; vertical-align: 2px; }
+.chips button.has:not(.on) { border-color: var(--hard); color: var(--warn-ink); font-weight: 600; }
