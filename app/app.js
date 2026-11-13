@@ -477,6 +477,109 @@ function tapToken(i) {
   doLookup(words[k], { keepSentence: true });
 }
 $('#qclear').style.visibility = 'hidden';
+// 「收藏字幕」捷徑的 iCloud 分享連結：在 iPhone 做好捷徑、分享後填進來，設定頁就會出現一鍵安裝
+const SHORTCUT_URL = '';
+
+/* ---------- 📷 從截圖讀字幕（在手機上辨識，不用 API） ---------- */
+// Netflix 等 App 有防盜：截圖畫面全黑、只剩白色字幕，剛好最好辨識
+let ocrWorker = null;
+function loadScript(src) {
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('載入失敗：' + src)); document.head.appendChild(s); });
+}
+async function getOcr(onProgress) {
+  if (ocrWorker) return ocrWorker;
+  if (!window.Tesseract) await loadScript('ocr/tesseract.min.js');
+  const base = new URL('ocr/', location.href).href;
+  ocrWorker = await Tesseract.createWorker('eng', 1, {
+    workerPath: base + 'worker.min.js', corePath: base, langPath: base, gzip: true,
+    logger: m => onProgress && onProgress(m)
+  });
+  return ocrWorker;
+}
+// 前處理：亮底（網頁、書）保留深色字；暗底（影片字幕）只留亮的字，轉成白底黑字
+async function prepImage(file) {
+  const url = URL.createObjectURL(file);
+  const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('讀不到這張圖片')); i.src = url; });
+  const scale = Math.min(1, 1800 / img.naturalWidth);
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(img.naturalWidth * scale); cv.height = Math.round(img.naturalHeight * scale);
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  URL.revokeObjectURL(url);
+  const d = ctx.getImageData(0, 0, cv.width, cv.height), p = d.data;
+  let sum = 0;
+  for (let i = 0; i < p.length; i += 16) sum += 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
+  const dark = sum / (p.length / 16) < 110;
+  for (let i = 0; i < p.length; i += 4) {
+    const l = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
+    const v = dark ? (l > 165 ? 0 : 255) : (l < 135 ? 0 : 255);
+    p[i] = p[i + 1] = p[i + 2] = v; p[i + 3] = 255;
+  }
+  ctx.putImageData(d, 0, 0);
+  return { canvas: cv, dark };
+}
+function cleanOcrLine(t) {
+  return t.replace(/^[\s\-–—一_=~]+/, '').replace(/(^|\s)\|(?=\s|$|')/g, '$1I').replace(/\s+/g, ' ').trim();
+}
+async function readScreenshot(file) {
+  openSheet(`<div class="ocr-wait"><div class="w-icon">📷</div><b id="ocr-msg">準備辨識…</b><div class="progress"><i id="ocr-bar" style="width:5%"></i></div><p class="muted">第一次使用要下載約 7MB 的辨識資料，之後就很快。圖片只在手機上處理，不會上傳。</p></div>`);
+  const msg = t => { const el = $('#ocr-msg'); if (el) el.textContent = t; };
+  const bar = v => { const el = $('#ocr-bar'); if (el) el.style.width = Math.round(v * 100) + '%'; };
+  try {
+    const worker = await getOcr(m => {
+      if (/loading/.test(m.status)) { msg('下載辨識資料中（只有第一次）…'); bar(0.05 + (m.progress || 0) * 0.6); }
+      else if (/recogniz/.test(m.status)) { msg('辨識字幕中…'); bar(0.65 + (m.progress || 0) * 0.35); }
+    });
+    msg('辨識字幕中…');
+    const { canvas } = await prepImage(file);
+    const { data } = await worker.recognize(canvas);
+    const H = canvas.height;
+    // 短句（例如 Here?）信心分數天生偏低，所以再看「有幾成是字典裡的英文字」來判斷是不是雜訊
+    const wordRatio = t => {
+      const ws = (t.toLowerCase().match(/[a-z]+(?:'[a-z]+)?/g) || []);
+      if (!ws.length) return 0;
+      const SHORT = /^(i|a|an|to|of|in|on|at|is|it|be|we|he|me|my|so|no|do|go|up|us|or|if|by|oh|ok|hi|am|as)$/;
+      return ws.filter(w => w.length <= 2 ? SHORT.test(w) : DICT && (DICT.e[w] || DICT.f[w] || DICT.e[w.replace(/'s$/, '')])).length / ws.length;
+    };
+    // 至少要有一個 3 個字母以上、字典查得到的字（雜訊常是零散的單一字母）
+    const hasRealWord = t => (t.toLowerCase().match(/[a-z]{3,}/g) || []).some(w => DICT && (DICT.e[w] || DICT.f[w]));
+    // 字母佔非空白字元的比例：背景雜訊通常是一堆符號
+    const letterRatio = t => { const ns = t.replace(/\s/g, ''); return ns ? (ns.match(/[A-Za-z]/g) || []).length / ns.length : 0; };
+    let lines = (data.lines || []).map(l => { const text = cleanOcrLine(l.text); return { text, conf: l.confidence, y: l.bbox.y0 / H, wr: wordRatio(text) }; })
+      .filter(l => letterRatio(l.text) >= 0.7 && hasRealWord(l.text) && (l.conf >= 60 || (l.conf >= 20 && l.wr >= 0.6)));
+    if (!lines.length) {
+      openSheet(`<h3 style="margin-top:0">沒有讀到英文字幕</h3><p class="muted">請確認截圖時畫面上有英文字幕。如果是用相機拍電視，盡量拍正、拍清楚。</p><button class="btn block" id="ocr-close">好</button>`, b => b.querySelector('#ocr-close').onclick = closeSheet);
+      return;
+    }
+    // 預設選：信心夠高的行；字幕通常在畫面下半部
+    const sub = lines.filter(l => l.y > 0.45 && l.wr >= 0.6);
+    const pre = new Set((sub.length ? sub : lines).map(l => lines.indexOf(l)));
+    const build = () => [...pre].sort((a, b) => a - b).map(i => lines[i].text).join('\n');
+    openSheet(`
+      <h3 style="margin:0 0 4px">讀到的文字</h3>
+      <p class="muted" style="margin:0 0 10px">點選要用的那幾行；認錯的字可以在下面直接改。</p>
+      <div id="ocr-lines">${lines.map((l, i) => `<button type="button" class="ocr-line ${pre.has(i) ? 'on' : ''}" data-i="${i}">${esc(l.text)}</button>`).join('')}</div>
+      <textarea id="ocr-text" class="ocr-text">${esc(build())}</textarea>
+      <button class="btn block" id="ocr-use">用這句查字</button>
+      <button class="btn block plain" style="margin-top:8px" id="ocr-cancel">取消</button>`, body => {
+      body.querySelectorAll('.ocr-line').forEach(b => b.onclick = () => {
+        const i = +b.dataset.i; pre.has(i) ? pre.delete(i) : pre.add(i);
+        b.classList.toggle('on', pre.has(i)); $('#ocr-text').value = build();
+      });
+      body.querySelector('#ocr-cancel').onclick = closeSheet;
+      body.querySelector('#ocr-use').onclick = () => {
+        const t = $('#ocr-text').value.trim(); if (!t) return;
+        closeSheet(); show('search'); qEl.value = '';
+        if (isSentence(t) || t.includes('\n')) setSentence(t); else doLookup(t);
+      };
+    });
+  } catch (e) {
+    openSheet(`<h3 style="margin-top:0">辨識失敗</h3><p class="muted">${esc(e.message || String(e))}<br>第一次使用需要網路下載辨識資料。</p><button class="btn block" id="ocr-close">好</button>`, b => b.querySelector('#ocr-close').onclick = closeSheet);
+  }
+}
+$('#qshot').onclick = () => $('#shotfile').click();
+$('#shotfile').onchange = e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) readScreenshot(f); };
+
 // 📋 一鍵貼上剪貼簿：整句 → 句子模式；一個字 → 直接查
 $('#qpaste').onclick = async () => {
   let t = '';
@@ -1234,6 +1337,24 @@ function renderSettings() {
         </div>
         <div class="set-row"><input type="password" id="s-token" placeholder="貼上金鑰 ghp_…" style="flex:1;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px 10px;font-size:15px" autocomplete="off"><button class="btn" id="s-connect" style="padding:8px 14px">連接</button></div>`}
     </div>
+    <div class="set-h">手機看劇收藏字幕</div>
+    <div class="set-group"><div class="how" style="padding:12px 0">
+      <b>方法 1：截圖 → 📷</b>
+      <ol><li>看到不懂的字就暫停、截圖（Netflix 截圖畫面會變黑，但字幕還在，這樣最好辨識）</li>
+      <li>打開單字冊，按搜尋框右邊的 <b>📷</b> → 選剛剛的截圖（也可以直接用相機拍電視）</li>
+      <li>點選要用的那幾行 →「用這句查字」</li></ol>
+      <b>方法 2：輕點手機背面兩下（最快，截圖不會存進相簿）</b>
+      ${SHORTCUT_URL ? `<p><a class="btn ghost" href="${esc(SHORTCUT_URL)}" target="_blank" rel="noopener">＋ 一鍵安裝「收藏字幕」捷徑</a></p>` : `
+      <div style="margin-top:6px">先建立捷徑（只要做一次）：</div>
+      <ol><li>打開「<b>捷徑</b>」App → 右上角 <b>＋</b>，命名「收藏字幕」</li>
+      <li>加入動作「<b>截取螢幕畫面</b>」</li>
+      <li>加入動作「<b>從影像擷取文字</b>」</li>
+      <li>加入動作「<b>拷貝到剪貼板</b>」</li>
+      <li>（選用）加入「<b>顯示通知</b>」，內容寫「已複製字幕，打開單字冊按 📋」</li></ol>`}
+      <div>再設定背面輕點：<b>設定 → 輔助使用 → 觸控 → 背面輕點 → 點兩下</b> → 選「收藏字幕」。</div>
+      <div style="margin-top:6px">之後看劇時<b>輕點手機背面兩下</b> → 打開單字冊 → 按 <b>📋</b>。</div>
+      <div class="muted" style="margin-top:6px">動作名稱會因 iOS 版本略有不同。iPhone 不允許捷徑直接打開主畫面上的網頁 App，所以最後要自己點開單字冊按 📋。</div>
+    </div></div>
     ${matchMedia('(pointer: fine)').matches ? `
     <div class="set-h">一鍵收藏書籤（電腦）</div>
     <div class="set-group"><div class="how" style="padding:12px 0">

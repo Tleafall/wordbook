@@ -297,3 +297,14 @@ details.card.how[open] summary::after { content: "－"; }
 .w-dots i.on { background: var(--accent); width: 18px; border-radius: 4px; }
 #dictload { margin-bottom: 18px; }
 #dictload .progress { margin-top: 8px; }
+
+/* 📷 截圖辨識 */
+.searchbox input { padding-right: 112px; }
+.iconbtn.shot { right: 72px; font-size: 17px; filter: grayscale(.3); }
+.ocr-wait { text-align: center; padding: 8px 0 4px; }
+.ocr-wait .w-icon { font-size: 44px; margin-bottom: 8px; }
+.ocr-wait .progress { margin: 12px 0; }
+#ocr-lines { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.ocr-line { text-align: left; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); font-size: 15px; color: var(--ink2); }
+.ocr-line.on { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+.ocr-text { width: 100%; min-height: 80px; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 16px; margin-bottom: 12px; resize: vertical; }
