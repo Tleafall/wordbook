@@ -231,3 +231,69 @@ mark.hit { background: #ffe58a; color: #1d1d1f; font-weight: 700; border-radius:
 :root[data-theme="dark"] mark.hit { background: #c9a227; color: #111; }
 .searchbox input { padding-right: 76px; }
 .iconbtn.paste { right: 40px; font-size: 17px; filter: grayscale(.3); }
+
+/* ===== 外觀細修 ===== */
+:root { --chart: #2f6fdb; --warn-bg: #fff4e0; --warn-ink: #8a5a00; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --chart: #5b8ef5; --warn-bg: #3a2e17; --warn-ink: #f3c46b; } }
+:root[data-theme="dark"] { --chart: #5b8ef5; --warn-bg: #3a2e17; --warn-ink: #f3c46b; }
+
+#topbar { backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); background: color-mix(in srgb, var(--bg) 85%, transparent); }
+.card { border: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+.btn { transition: transform .08s ease, filter .15s; }
+.btn:active, .grades button:active, .tok:active { transform: scale(.97); }
+@media (hover: hover) { .btn:hover { filter: brightness(1.06); } .wordlist li[data-w]:hover, .suggest li:hover { background: var(--bg); cursor: pointer; } }
+
+/* 底部分頁圖示 */
+#tabs svg.ti { width: 24px; height: 24px; filter: none; opacity: 1; }
+#tabs button { color: var(--ink3); }
+#tabs button.on { color: var(--accent); }
+#tabs button.on svg.ti { stroke-width: 2.4; }
+
+/* 鍵盤提示 */
+kbd { display: inline-block; font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 2px 5px; border-radius: 4px; background: rgba(255,255,255,.25); border: 1px solid rgba(255,255,255,.35); margin-right: 4px; vertical-align: 1px; }
+.btn.block kbd { margin: 0 0 0 6px; }
+.grades button kbd { margin: 0 0 3px; }
+.rc-act { display: flex; gap: 14px; }
+
+/* 翻卡動畫 */
+.flash .answer { animation: reveal .22s ease-out; }
+@keyframes reveal { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.flash.revealed .prompt { padding-top: 12px; }
+@media (prefers-reduced-motion: reduce) { .flash .answer, .sheet-body { animation: none; } }
+
+/* 未來 7 天圖表 */
+.fc-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; font-size: 15px; }
+.fc svg { width: 100%; height: auto; display: block; overflow: visible; }
+.fc-base { stroke: var(--line); stroke-width: 1; }
+.fc-bar { fill: var(--chart); }
+.fc-col { cursor: pointer; }
+.fc-col.on .fc-bar, .fc-col:hover .fc-bar { filter: brightness(1.15); }
+.fc-col.on .fc-lab { fill: var(--ink); font-weight: 700; }
+.fc-val { fill: var(--ink); font-size: 12px; font-weight: 700; }
+.fc-lab { fill: var(--ink3); font-size: 11px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* 收合說明 */
+details.card.how summary { cursor: pointer; list-style: none; }
+details.card.how summary::-webkit-details-marker { display: none; }
+details.card.how summary::after { content: "＋"; float: right; color: var(--ink3); }
+details.card.how[open] summary::after { content: "－"; }
+
+/* 備份提醒、加入主畫面 */
+.backup-banner, .a2hs { background: var(--warn-bg); color: var(--warn-ink); border-color: transparent; }
+.backup-banner .muted, .a2hs .muted { color: inherit; opacity: .85; margin-top: 4px; }
+.a2hs .warn { margin-top: 8px; font-weight: 600; font-size: 14px; }
+.a2hs .link { color: inherit; margin-top: 8px; font-size: 13px; text-decoration: underline; }
+.a2hs-steps { margin: 8px 0 0; padding-left: 20px; font-size: 15px; line-height: 1.8; text-align: left; }
+.ios-share { display: inline-flex; width: 22px; height: 22px; align-items: center; justify-content: center; border: 1.5px solid currentColor; border-radius: 5px; font-size: 12px; margin-left: 4px; }
+
+/* 歡迎引導 */
+.welcome { text-align: center; padding: 6px 4px 4px; }
+.welcome .w-icon { font-size: 52px; line-height: 1; margin: 6px 0 10px; }
+.welcome h2 { margin: 0 0 8px; font-size: 22px; }
+.welcome .w-body { color: var(--ink2); font-size: 16px; line-height: 1.7; min-height: 110px; text-align: left; }
+.w-dots { display: flex; justify-content: center; gap: 6px; margin: 16px 0; }
+.w-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.w-dots i.on { background: var(--accent); width: 18px; border-radius: 4px; }
+#dictload { margin-bottom: 18px; }
+#dictload .progress { margin-top: 8px; }

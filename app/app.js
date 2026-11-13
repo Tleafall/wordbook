@@ -51,7 +51,25 @@ function touch(item) { item.mod = now(); scheduleSync(); }
 let DICT = null, KEYS = null;
 async function loadDict() {
   const r = await fetch('dict.json?v=2'); // 字典更新時改這個版本號
-  DICT = await r.json();
+  // 第一次下載約 3MB，顯示進度；之後從手機快取讀，很快
+  const EST = 7.9e6;
+  let text;
+  if (r.body && r.body.getReader) {
+    const reader = r.body.getReader(), chunks = [], t0 = now();
+    let got = 0, shown = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value); got += value.length;
+      if (!shown && now() - t0 > 400) { $('#dictload').hidden = false; shown = true; }
+      if (shown) $('#dictbar').style.width = Math.min(99, got / EST * 100).toFixed(0) + '%';
+    }
+    $('#dictload').hidden = true;
+    const all = new Uint8Array(got); let off = 0;
+    for (const c of chunks) { all.set(c, off); off += c.length; }
+    text = new TextDecoder().decode(all);
+  } else text = await r.text();
+  DICT = JSON.parse(text);
   KEYS = Object.keys(DICT.e).sort();
 }
 function norm(q) {
@@ -698,6 +716,9 @@ function renderBook() {
   }[sort];
   list.sort(cmp);
   document.querySelector('.book-empty')?.remove();
+  document.querySelector('#view-book .backup-banner')?.remove();
+  $('#bookstats').insertAdjacentHTML('beforebegin', backupBannerHtml());
+  bindBackupBanner($('#view-book'));
   if (!words.length) {
     $('#booklist').innerHTML = '';
     $('#booklist').insertAdjacentHTML('afterend', '<div class="empty book-empty"><p class="big">單字冊還是空的</p><p>到「查詢」查一個字，按「加入單字冊」就會出現在這裡。</p></div>');
@@ -751,6 +772,7 @@ function renderReviewHome() {
   const t = now();
   const upcoming = allCards().filter(x => x.c.state !== 'new' && x.c.due >= endOfDay()).sort((a, b) => a.c.due - b.c.due)[0];
   home.innerHTML = `
+    ${backupBannerHtml()}
     <div class="card" style="text-align:center">
       ${total ? `<div class="big-num">${total}</div><div class="muted">張卡片等你練</div>` : `<div class="big-num">✓</div><div class="muted">今天的份做完了${ts.reviews ? `（練了 ${ts.reviews} 張）` : ''}</div>`}
       <div class="review-sum">
@@ -761,8 +783,9 @@ function renderReviewHome() {
       ${total ? `<button class="btn block" id="startrev">開始複習</button>` : (upcoming ? `<p class="muted">下一張在 ${FSRS.fmtDelay(upcoming.c.due - t)}後到期</p>` : '')}
       ${!total && (q.newRec || q.newExtra) ? `<button class="btn block ghost" id="morenew" style="margin-top:8px">再多學 5 張新卡</button>` : ''}
     </div>
-    <div class="card how">
-      <b>這裡怎麼幫你記住</b>
+    ${forecastHtml()}
+    <details class="card how">
+      <summary><b>這裡怎麼幫你記住？</b></summary>
       <ol>
         <li><b>先回想再看答案</b>：自己想一次，比重看十次更有效（提取練習）。</li>
         <li><b>照記憶曲線排時間</b>：快忘掉的時候才出現，記得越牢，間隔越長；忘了就從短間隔重來。</li>
@@ -770,7 +793,8 @@ function renderReviewHome() {
         <li><b>帶著台詞記</b>：拼寫卡會用你記下的原句挖空，把字跟劇情連在一起。</li>
       </ol>
       <span class="muted">按「忘了／困難」不用怕，誠實回答，排程才會準。</span>
-    </div>`;
+    </details>`;
+  bindBackupBanner(home); bindForecast(home);
   const sb = $('#startrev'); if (sb) sb.onclick = () => startSession();
   const mn = $('#morenew'); if (mn) mn.onclick = () => { ts.newRec = Math.max(0, ts.newRec - 5); ts.newExtra = Math.max(0, ts.newExtra - 5); save(); startSession(); };
 }
@@ -867,17 +891,18 @@ function renderCard(x, revealed) {
   const t = now();
   const gradesHtml = revealed ? `<div class="grades">${[1, 2, 3, 4].map(g => {
     const n = FSRS.review(c, g, t, S.settings.retention);
-    return `<button class="g${g}" data-g="${g}">${['忘了', '困難', '記得', '簡單'][g - 1]}<small>${FSRS.fmtDelay(n.due - t)}</small></button>`;
-  }).join('')}</div>` : `<button class="btn block" id="reveal" style="margin-top:14px">顯示答案</button>`;
+    return `<button class="g${g}" data-g="${g}">${FINE_POINTER ? `<kbd>${g}</kbd>` : ''}${['忘了', '困難', '記得', '簡單'][g - 1]}<small>${FSRS.fmtDelay(n.due - t)}</small></button>`;
+  }).join('')}</div>` : `<button class="btn block" id="reveal" style="margin-top:14px">顯示答案${FINE_POINTER ? ' <kbd>空白鍵</kbd>' : ''}</button>`;
 
   $('#review-card').innerHTML = `
-    <div class="rc-top"><span class="rc-type">${TYPES[k]}</span><span>${c.state === 'new' ? '新卡' : c.state === 'review' ? '複習' : '再練一次'}・還有 ${session.keys.length} 張</span><button class="link" id="quit">結束</button></div>
+    <div class="rc-top"><span class="rc-type">${TYPES[k]}</span><span>${c.state === 'new' ? '新卡' : c.state === 'review' ? '複習' : '再練一次'}・還有 ${session.keys.length} 張</span><span class="rc-act">${session.undo && session.undo.length ? `<button class="link" id="undo" title="快捷鍵 U">↶ 上一張</button>` : ''}<button class="link" id="quit">結束</button></span></div>
     <div class="progress"><i style="width:${pct}%"></i></div>
-    <div class="card flash"><div class="prompt">${prompt}</div>${answer}</div>
+    <div class="card flash ${revealed ? 'revealed' : ''}"><div class="prompt">${prompt}</div>${answer}</div>
     ${gradesHtml}`;
   const root = $('#review-card');
   root.querySelectorAll('[data-say]').forEach(b => b.onclick = () => say(b.dataset.say, 'en'));
   $('#quit').onclick = () => { session = null; renderReviewHome(); updateBadge(); };
+  if ($('#undo')) $('#undo').onclick = undoGrade;
   if (k === 'lis') {
     $('#replay').onclick = () => say(w, 'en');
     $('#slow').onclick = () => { speechSynthesis.cancel(); speak(w, 'en', 0.55); };
@@ -908,6 +933,9 @@ function renderCard(x, revealed) {
 function grade(x, g) {
   const { it, k, c } = x;
   const t = now(), ts = todayStat();
+  // 記下這一步之前的狀態，按「上一張」可以還原（按錯評分時用）
+  session.undo = (session.undo || []).slice(-19);
+  session.undo.push({ w: it.word, k, cards: JSON.parse(JSON.stringify(it.cards)), mod: it.mod, keys: session.keys.slice(), done: session.done, again: session.again, day: { ...ts }, logLen: S.log.length });
   if (c.state === 'new') { if (k === 'rec') ts.newRec++; else ts.newExtra++; }
   const n = FSRS.review(c, g, t, S.settings.retention);
   it.cards[k] = n;
@@ -925,6 +953,151 @@ function grade(x, g) {
   if (!((n.state === 'learning' || n.state === 'relearning') && n.due < endOfDay())) session.keys = session.keys.filter(key => key !== it.word + '|' + k);
   save(); updateBadge();
   nextCard();
+}
+
+/* ---------- 複習：上一張、鍵盤快捷鍵 ---------- */
+const FINE_POINTER = matchMedia('(pointer: fine)').matches;
+function undoGrade() {
+  if (!session || !session.undo || !session.undo.length) return;
+  const u = session.undo.pop();
+  const it = S.words[u.w]; if (!it) return;
+  it.cards = u.cards; it.mod = now();
+  session.keys = u.keys; session.done = u.done; session.again = u.again;
+  Object.assign(todayStat(), u.day);
+  S.log.length = Math.min(S.log.length, u.logLen);
+  save(); updateBadge(); scheduleSync();
+  session.cur = { key: u.w + '|' + u.k, it, k: u.k, c: it.cards[u.k] };
+  session.lastWord = u.w;
+  renderCard(session.cur, true);
+  toast('已還原上一張，可以重新評分');
+}
+document.addEventListener('keydown', e => {
+  if (currentView !== 'review' || !session || !session.cur || !$('#review-card') || $('#review-card').hidden) return;
+  if (!$('#sheet').hidden) return;
+  const typing = e.target && e.target.tagName === 'INPUT';
+  if (!typing && (e.key === ' ' || e.key === 'Enter') && $('#reveal')) { e.preventDefault(); $('#reveal').click(); return; }
+  if (!typing && /^[1-4]$/.test(e.key) && $('.grades')) { e.preventDefault(); $(`.grades [data-g="${e.key}"]`).click(); return; }
+  if (!typing && (e.key === 'u' || e.key === 'U')) { e.preventDefault(); undoGrade(); }
+});
+
+/* ---------- 未來 7 天複習量 ---------- */
+const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
+function forecastData() {
+  const eod = endOfDay(), days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(eod - DAY + i * DAY);
+    days.push({ label: i === 0 ? '今天' : i === 1 ? '明天' : '週' + WEEK[d.getDay()], n: 0 });
+  }
+  for (const { c } of allCards()) {
+    if (c.state === 'new') continue;
+    const i = c.due < eod ? 0 : Math.floor((c.due - eod) / DAY) + 1;
+    if (i < 7) days[i].n++;
+  }
+  return days;
+}
+function forecastHtml() {
+  const days = forecastData();
+  if (!days.some(d => d.n)) return '';
+  const max = Math.max(...days.map(d => d.n)), W = 320, H = 120, top = 18, base = 92, slot = W / 7, bw = 22;
+  const bars = days.map((d, i) => {
+    const h = d.n ? Math.max(4, (d.n / max) * (base - top)) : 0, x = i * slot + (slot - bw) / 2, y = base - h, r = Math.min(4, h);
+    const path = h ? `M${x},${base} V${y + r} Q${x},${y} ${x + r},${y} H${x + bw - r} Q${x + bw},${y} ${x + bw},${y + r} V${base} Z` : '';
+    return `<g class="fc-col" data-i="${i}">
+        <rect class="fc-hit" x="${i * slot}" y="0" width="${slot}" height="${H}" fill="transparent"/>
+        ${path ? `<path class="fc-bar" d="${path}"/>` : ''}
+        ${i === 0 && d.n ? `<text class="fc-val" x="${x + bw / 2}" y="${y - 5}" text-anchor="middle">${d.n}</text>` : ''}
+        <text class="fc-lab" x="${x + bw / 2}" y="${base + 18}" text-anchor="middle">${d.label}</text>
+      </g>`;
+  }).join('');
+  return `<div class="card fc">
+      <div class="fc-head"><b>未來 7 天要複習</b><span class="muted" id="fc-tip">點長條看張數</span></div>
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="未來 7 天複習量：${days.map(d => d.label + ' ' + d.n + ' 張').join('，')}">
+        <line class="fc-base" x1="0" y1="${base}" x2="${W}" y2="${base}"/>${bars}
+      </svg>
+      <table class="sr-only"><tr>${days.map(d => `<th>${d.label}</th>`).join('')}</tr><tr>${days.map(d => `<td>${d.n}</td>`).join('')}</tr></table>
+    </div>`;
+}
+function bindForecast(root) {
+  const days = forecastData(), tip = root.querySelector('#fc-tip'); if (!tip) return;
+  root.querySelectorAll('.fc-col').forEach(g => {
+    const showTip = () => { const d = days[+g.dataset.i]; tip.textContent = `${d.label}：${d.n} 張`; root.querySelectorAll('.fc-col').forEach(x => x.classList.toggle('on', x === g)); };
+    g.addEventListener('pointerenter', showTip); g.addEventListener('click', showTip);
+  });
+}
+
+/* ---------- 備份提醒 ---------- */
+function backupDue() {
+  const words = Object.values(S.words);
+  if (words.length < 10) return null;
+  const b = S.backup || {};
+  if (b.snooze && b.snooze > now()) return null;
+  if (S.sync && S.sync.gistId && S.sync.last && now() - S.sync.last < 3 * DAY && !S.sync.error) return null; // 有雲端同步就等於有備份
+  const since = b.last || 0;
+  const fresh = words.filter(w => w.added > since).length;
+  if (!fresh) return null;
+  const oldest = Math.min(...words.map(w => w.added));
+  if (fresh >= 50 || now() - Math.max(since, oldest) > 14 * DAY) return { fresh, never: !b.last };
+  return null;
+}
+function backupBannerHtml() {
+  const d = backupDue(); if (!d) return '';
+  return `<div class="card backup-banner">
+      <div><b>📦 ${d.never ? `你已經收了 ${d.fresh} 個字，還沒備份過` : `有 ${d.fresh} 個新字還沒備份`}</b>
+      <div class="muted">資料只存在這支手機。備份檔可以存到「檔案」App 或 iCloud Drive，換手機也帶得走。</div></div>
+      <div class="row" style="margin-top:10px"><button class="btn" data-bk="now">立即備份</button><button class="btn plain" data-bk="later">3 天後再提醒</button></div>
+    </div>`;
+}
+function bindBackupBanner(root) {
+  root.querySelectorAll('[data-bk]').forEach(b => b.onclick = () => {
+    if (b.dataset.bk === 'now') exportJSON();
+    else { S.backup = { ...(S.backup || {}), snooze: now() + 3 * DAY }; save(); }
+    root.querySelector('.backup-banner')?.remove();
+  });
+}
+
+/* ---------- 第一次使用：引導、加入主畫面 ---------- */
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const IS_STANDALONE = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const NEEDS_A2HS = IS_IOS && !IS_STANDALONE;
+const A2HS_STEPS = `<ol class="a2hs-steps"><li>點 Safari 下方的「分享」<span class="ios-share" aria-hidden="true">⬆︎</span></li><li>往下滑，選「<b>加入主畫面</b>」</li><li>之後都從主畫面的「單字冊」圖示打開</li></ol>`;
+function renderA2hsBanner() {
+  const el = $('#a2hs');
+  if (!NEEDS_A2HS || (S.a2hsHide && S.a2hsHide > now())) { el.hidden = true; return; }
+  const n = Object.keys(S.words).length;
+  el.hidden = false;
+  el.innerHTML = `<div class="card a2hs">
+      <b>📲 先加入主畫面，再開始收單字</b>
+      <div class="muted">在 Safari 分頁裡收的字，iPhone 可能在 7 天沒開後清掉，而且<b>不會</b>出現在主畫面的 App 裡。</div>
+      ${A2HS_STEPS}
+      ${n ? `<div class="warn">你已經在這裡收了 ${n} 個字：先到「設定 → 匯出備份」，加入主畫面後再用「從備份還原」帶過去。</div>` : ''}
+      <button class="link" id="a2hs-hide">先不要，7 天後再提醒</button>
+    </div>`;
+  $('#a2hs-hide').onclick = () => { S.a2hsHide = now() + 7 * DAY; save(); el.hidden = true; };
+}
+function showWelcome() {
+  const pages = [
+    ...(NEEDS_A2HS ? [{ icon: '📲', t: '先加入主畫面', b: `這樣用起來就像一般 App，可以離線查字，資料也比較不會被清掉。${A2HS_STEPS}` }] : []),
+    { icon: '🔍', t: '查字、貼整句', b: '直接打單字，或把整句英文（可以連中文字幕）貼進來，點不懂的字就能查。變化形（went、figured out）會自動找到原形。' },
+    { icon: '⭐', t: '收藏時選「這句的意思」', b: '一個字有很多意思，點選這句用到的那個，卡片只考它。記下劇名和台詞，有情境的字更好記。' },
+    { icon: '🧠', t: '每天複習一下', b: '先在心裡回想，再看答案，誠實按「忘了／記得」。App 會在你快忘的時候才讓它出現，越熟間隔越長。走路時也可以用「走路背」用聽的。' },
+  ];
+  let i = 0;
+  const draw = () => {
+    const p = pages[i];
+    openSheet(`<div class="welcome">
+        <div class="w-icon">${p.icon}</div>
+        <h2>${p.t}</h2>
+        <div class="w-body">${p.b}</div>
+        <div class="w-dots">${pages.map((_, j) => `<i class="${j === i ? 'on' : ''}"></i>`).join('')}</div>
+        <button class="btn block" id="w-next">${i < pages.length - 1 ? '下一步' : '開始使用'}</button>
+        ${i < pages.length - 1 ? '<button class="link" id="w-skip" style="margin-top:10px">略過</button>' : ''}
+      </div>`, body => {
+      const done = () => { S.onboarded = now(); save(); closeSheet(); };
+      body.querySelector('#w-next').onclick = () => { if (i < pages.length - 1) { i++; draw(); } else done(); };
+      const sk = body.querySelector('#w-skip'); if (sk) sk.onclick = done;
+    });
+  };
+  draw();
 }
 
 /* ---------- 邊走邊背 ---------- */
@@ -1136,6 +1309,7 @@ async function shareOrDownload(name, text, type) {
 function exportJSON() {
   const data = JSON.stringify({ app: 'wordbook', version: 1, exported: new Date().toISOString(), ...S, sync: undefined });
   shareOrDownload(`單字冊備份-${dayKey(now())}.json`, data, 'application/json');
+  S.backup = { last: now() }; save();
 }
 function exportCSV() {
   const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
@@ -1387,6 +1561,8 @@ document.addEventListener('visibilitychange', () => {
   updateBadge();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => { });
   $('#search-empty').hidden = false;
+  renderA2hsBanner();
+  if (!S.onboarded) setTimeout(showWelcome, 300);
   try {
     await loadDict();
     // 字典更新後，已收藏的字也換成新版解釋
