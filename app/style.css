@@ -308,3 +308,13 @@ details.card.how[open] summary::after { content: "－"; }
 .ocr-line { text-align: left; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); font-size: 15px; color: var(--ink2); }
 .ocr-line.on { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); font-weight: 600; }
 .ocr-text { width: 100%; min-height: 80px; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 16px; margin-bottom: 12px; resize: vertical; }
+
+/* 進階同步 */
+details.adv-sync > summary { list-style: none; padding: 12px 0; cursor: pointer; }
+details.adv-sync > summary::-webkit-details-marker { display: none; }
+details.adv-sync > summary small { display: block; color: var(--ink3); font-size: 12px; font-weight: 400; }
+details.adv-sync > summary::after { content: "＋"; float: right; margin-top: -30px; color: var(--ink3); }
+details.adv-sync[open] > summary::after { content: "－"; }
+.warn-box { background: var(--warn-bg); color: var(--warn-ink); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
+.warn-box ul { margin: 6px 0 0; padding-left: 18px; }
+.how code { font-size: 13px; }

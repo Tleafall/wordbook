@@ -75,8 +75,12 @@ async function loadDict() {
 function norm(q) {
   return q.toLowerCase().replace(/[’‘`]/g, "'").replace(/[“”".,!?;:()]/g, ' ').replace(/\s+/g, ' ').trim();
 }
+// 物件安全存取：擋掉 __proto__ 這類特殊名稱，避免被拿來汙染資料
+const BAD_KEY = /^(__proto__|constructor|prototype)$/;
+const safeKey = k => typeof k === 'string' && k.length > 0 && k.length <= 200 && !BAD_KEY.test(k);
+const own = (o, k) => (o && safeKey(k) && Object.prototype.hasOwnProperty.call(o, k)) ? o[k] : undefined;
 function entryOf(w) {
-  const e = DICT && DICT.e[w];
+  const e = DICT && own(DICT.e, w);
   if (!e) return null;
   return { word: w, phon: e[0], zh: e[1], rank: e[2], collins: e[3] };
 }
@@ -84,14 +88,14 @@ function entryOf(w) {
 function lookupLocal(q) {
   const w = norm(q);
   if (!w || !DICT) return { w, entry: null };
-  let entry = entryOf(w), lemma = DICT.f[w] || null;
+  let entry = entryOf(w), lemma = own(DICT.f, w) || null;
   if (!entry && w.includes(' ')) {
     const parts = w.split(' ');
-    const base = DICT.f[parts[0]];
-    if (base) { const alt = [base, ...parts.slice(1)].join(' '); if (DICT.e[alt]) { lemma = alt; } }
+    const base = own(DICT.f, parts[0]);
+    if (base) { const alt = [base, ...parts.slice(1)].join(' '); if (own(DICT.e, alt)) { lemma = alt; } }
   }
   if (!entry && !lemma) {
-    for (const suf of ["'s", "s'", 's']) if (w.endsWith(suf) && DICT.e[w.slice(0, -suf.length)]) { lemma = w.slice(0, -suf.length); break; }
+    for (const suf of ["'s", "s'", 's']) if (w.endsWith(suf) && own(DICT.e, w.slice(0, -suf.length))) { lemma = w.slice(0, -suf.length); break; }
   }
   return { w, entry, lemma };
 }
@@ -260,8 +264,9 @@ function speak(text, lang = 'en', rate) {
 function say(text, lang) { if ('speechSynthesis' in window) speechSynthesis.cancel(); return speak(text, lang); }
 
 /* ---------- 單字冊資料 ---------- */
-function getWord(w) { return S.words[w]; }
+function getWord(w) { return own(S.words, w); }
 function addWord(w, entry, extra) {
+  if (!safeKey(w)) { toast('這個字不能加入'); return null; }
   const t = now();
   const item = {
     word: w, phon: entry?.phon || '', zh: entry?.zh || '', rank: entry?.rank || 0,
@@ -477,6 +482,7 @@ function tapToken(i) {
   doLookup(words[k], { keepSentence: true });
 }
 $('#qclear').style.visibility = 'hidden';
+const REVOKE_STEPS = `<ol><li>到 GitHub → 右上角頭像 → <b>Settings</b> → 最下面 <b>Developer settings</b> → <b>Personal access tokens</b></li><li>找到「單字冊同步」那組，按 <b>Delete</b>（刪掉後這組金鑰立刻失效）</li><li>回到單字冊按「中斷」，再產生新的金鑰重新連接</li></ol>`;
 // 「收藏字幕」捷徑的 iCloud 分享連結：在 iPhone 做好捷徑、分享後填進來，設定頁就會出現一鍵安裝
 const SHORTCUT_URL = '';
 
@@ -715,6 +721,10 @@ function openAddSheet(w, existing) {
     body.querySelector('#f-save').onclick = () => {
       const sense = $('#f-sense').value.replace(/[,，;；]/g, '、').replace(/\s*、\s*/g, '、').trim();
       const extra = { source: $('#f-src').value, ep: $('#f-ep').value, sentence: $('#f-sent').value, zh: $('#f-zh').value, note: $('#f-note').value, nf: curSentence?.nf, url: curSentence?.url, t: curSentence?.t, sense };
+      if (curSentence?.nf && /^\d{1,12}$/.test(curSentence.nf) && curSentence.src) {
+        S.nfTitles = S.nfTitles || {};
+        S.nfTitles[curSentence.nf] = { src: String(curSentence.src).slice(0, 100), ep: String(curSentence.ep || '').slice(0, 20) };
+      }
       if (existing) { addContext(getWord(w), extra); save(); toast('已記下'); }
       else {
         const item = addWord(w, $('#result')._entry, extra);
@@ -1321,22 +1331,38 @@ function renderSettings() {
   const isStandalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   $('#settings').innerHTML = `
     ${isStandalone ? '' : `<div class="card how"><b>加入主畫面（iPhone）</b><ol><li>用 <b>Safari</b> 打開這個網址</li><li>點下方的「分享」按鈕 <span style="font-size:18px">⎋</span></li><li>選「<b>加入主畫面</b>」</li></ol>之後從主畫面圖示打開，就像一般 App，也可以離線查字。</div>`}
-    <div class="set-h">雲端同步（電腦 ↔ 手機）</div>
+    ${S.sync && S.sync.gistId ? `
+    <div class="set-h">電腦 ↔ 手機同步</div>
     <div class="set-group">
-      ${S.sync && S.sync.gistId ? `
-        <div class="set-row"><label>已連接 GitHub<small id="sync-status"></small></label><button class="btn ghost" id="s-sync" style="padding:6px 12px">立即同步</button></div>
-        <div class="set-row"><label>中斷連接<small>只會移除這台裝置上的金鑰，雲端資料保留</small></label><button class="btn danger" id="s-unsync" style="padding:6px 12px">中斷</button></div>`
-      : `<div class="how" style="padding:12px 0">
-          單字冊會存一份到你 GitHub 帳號裡的<b>私人</b>檔案（Gist），電腦和手機各連一次就會自動同步。
-          <ol>
-            <li>打開 <a class="link" href="https://github.com/settings/tokens/new?scopes=gist&description=%E5%96%AE%E5%AD%97%E5%86%8A%E5%90%8C%E6%AD%A5" target="_blank" rel="noopener">GitHub 產生金鑰頁面</a>（已幫你勾好 <b>gist</b> 權限）</li>
-            <li>Expiration 選 <b>No expiration</b>（或你想要的期限），按最下面 <b>Generate token</b></li>
-            <li>複製 ghp_ 開頭的金鑰，貼到下面。<b>電腦和手機都要各貼一次</b></li>
-          </ol>
-          <span class="muted">金鑰只存在這台裝置，不會出現在備份檔裡。這把金鑰只能讀寫 Gist，不能動你的程式碼。</span>
+      <div class="set-row"><label>已連接 GitHub<small id="sync-status"></small></label><button class="btn ghost" id="s-sync" style="padding:6px 12px">立即同步</button></div>
+      <div class="set-row"><label>中斷連接<small>只移除這台裝置上的金鑰，雲端那份資料還在。要讓金鑰完全失效，請照下面「金鑰外洩怎麼辦」刪除它</small></label><button class="btn danger" id="s-unsync" style="padding:6px 12px">中斷</button></div>
+      <details class="adv-sync"><summary>金鑰外洩怎麼辦？</summary><div class="how">${REVOKE_STEPS}</div></details>
+    </div>` : `
+    <details class="set-group adv-sync">
+      <summary><b>進階：電腦 ↔ 手機同步</b><small>需要 GitHub 帳號。一般使用不需要，定期備份就夠了</small></summary>
+      <div class="how" style="padding:4px 0 12px">
+        <div class="warn-box">
+          <b>⚠️ 開啟前請先了解</b>
+          <ul>
+            <li>你要產生一組「<b>金鑰</b>」貼進來。它就像一把鑰匙：拿到的人可以讀寫你 GitHub 帳號裡的<b>所有 Gist</b>（不只單字冊這份）。<b>不要傳給任何人</b>，也不要貼到聊天群組問人。</li>
+            <li>單字冊會存在你帳號的「不公開 Gist」。它不會出現在搜尋或你的個人頁，但<b>知道網址的人就看得到</b>，所以不要分享那個網址。</li>
+            <li>建議：用一個<b>只拿來同步單字冊的 GitHub 帳號</b>，並替金鑰<b>設定到期日</b>。</li>
+          </ul>
         </div>
-        <div class="set-row"><input type="password" id="s-token" placeholder="貼上金鑰 ghp_…" style="flex:1;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px 10px;font-size:15px" autocomplete="off"><button class="btn" id="s-connect" style="padding:8px 14px">連接</button></div>`}
-    </div>
+        <b>產生金鑰（建議用這種，可以設到期日）</b>
+        <ol>
+          <li>打開 <a class="link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub「Fine-grained token」頁面</a></li>
+          <li>Token name 填「單字冊同步」，Expiration 選 <b>90 days</b>（到期後重新產生一組貼上即可）</li>
+          <li>往下找 <b>Permissions → Account permissions → Gists</b>，選 <b>Read and write</b>。<b>其他都不要勾</b></li>
+          <li>按 <b>Generate token</b>，複製 <code>github_pat_</code> 開頭的金鑰貼到下面。電腦和手機各貼一次</li>
+        </ol>
+        <details><summary class="muted">找不到 Gists 選項？改用舊版金鑰</summary>
+          <p class="muted">打開 <a class="link" href="https://github.com/settings/tokens/new?scopes=gist&description=%E5%96%AE%E5%AD%97%E5%86%8A%E5%90%8C%E6%AD%A5" target="_blank" rel="noopener">舊版金鑰頁面</a>（已勾好 gist），Expiration 選 90 days，產生後複製 <code>ghp_</code> 開頭的金鑰。</p></details>
+        <details><summary class="muted">金鑰外洩怎麼辦？</summary>${REVOKE_STEPS}</details>
+        <p class="muted">金鑰只存在這台裝置，不會出現在備份檔裡，也不會傳給單字冊作者。</p>
+      </div>
+      <div class="set-row"><input type="password" id="s-token" placeholder="貼上金鑰 github_pat_… 或 ghp_…" style="flex:1;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px 10px;font-size:15px" autocomplete="off"><button class="btn" id="s-connect" style="padding:8px 14px">連接</button></div>
+    </details>`}
     <div class="set-h">手機看劇收藏字幕</div>
     <div class="set-group"><div class="how" style="padding:12px 0">
       <b>方法 1：截圖 → 📷</b>
@@ -1392,7 +1418,25 @@ function renderSettings() {
       <div class="set-row"><label>匯出成表格 (CSV)<small>可以用 Excel／Numbers 打開</small></label><button class="btn ghost" id="s-csv" style="padding:6px 12px">CSV</button></div>
     </div>
     <input type="file" id="s-file" accept=".json,application/json" hidden>
-    <p class="muted" style="text-align:center">字典資料：ECDICT（MIT 授權）・英英解釋：Free Dictionary API<br>單字 ${Object.keys(S.words).length} 個・離線字典 ${KEYS ? KEYS.length.toLocaleString() : '載入中'} 筆</p>`;
+    <div class="set-h">隱私與使用說明</div>
+    <details class="set-group adv-sync">
+      <summary><b>你的資料去了哪裡？</b><small>沒有帳號、沒有追蹤，單字只存在你的裝置</small></summary>
+      <div class="how" style="padding:0 0 12px">
+        <ul>
+          <li><b>單字、複習紀錄、台詞</b>：只存在這台裝置的瀏覽器裡。作者沒有伺服器，看不到你的任何資料。</li>
+          <li><b>查字</b>：離線字典在你手機上查。有網路時，查的那個字會送到 <b>Free Dictionary API</b>（dictionaryapi.dev）取得英英解釋和發音；離線字典查不到的字，會送到 <b>MyMemory</b> 翻譯服務。只送那個字，不會送你的其他資料。</li>
+          <li><b>📷 截圖辨識</b>：完全在手機上進行，圖片不會上傳。</li>
+          <li><b>同步（如果有開）</b>：資料存在你自己 GitHub 帳號的 Gist，作者拿不到。</li>
+          <li><b>不追蹤</b>：沒有廣告、沒有分析工具、不使用 Cookie。</li>
+        </ul>
+        <b>關於台詞和著作權</b>
+        <ul>
+          <li>收藏的台詞屬於原影集／網站的著作權人，只存在你自己的裝置，<b>僅供個人學習使用</b>，請不要公開散布大量字幕內容。</li>
+          <li>本工具與 Netflix、YouTube 等服務沒有任何關係。字幕擷取功能可能因這些網站改版而失效。</li>
+        </ul>
+      </div>
+    </details>
+    <p class="muted" style="text-align:center">字典資料：ECDICT（MIT 授權）・英英解釋：Free Dictionary API（Wiktionary，CC BY-SA）・文字辨識：Tesseract.js（Apache 2.0）<br>單字 ${Object.keys(S.words).length} 個・離線字典 ${KEYS ? KEYS.length.toLocaleString() : '載入中'} 筆</p>`;
   const set = (k, v) => { st[k] = v; save(); };
   const bm = $('#s-bm');
   if (bm) { bm.setAttribute('href', bookmarkletCode()); bm.onclick = e => { e.preventDefault(); toast('請用拖曳的，把它拉到書籤列'); }; }
@@ -1450,8 +1494,9 @@ function importJSON(e) {
       if (!d.words) throw new Error('不是單字冊的備份檔');
       let added = 0, kept = 0;
       for (const [w, it] of Object.entries(d.words)) {
-        const cur = S.words[w];
-        if (!cur) { S.words[w] = it; added++; continue; }
+        if (!safeKey(w) || !it || typeof it !== 'object' || !it.cards || typeof it.cards !== 'object') continue;
+        const cur = own(S.words, w);
+        if (!cur) { it.contexts = Array.isArray(it.contexts) ? it.contexts : []; S.words[w] = it; added++; continue; }
         // 兩邊都有：保留複習次數比較多的那份，合併出處
         const reps = x => Object.values(x.cards).reduce((a, c) => a + c.reps, 0);
         const base = reps(it) > reps(cur) ? it : cur, other = base === it ? cur : it;
@@ -1542,20 +1587,26 @@ function handleCapture() {
   if (!h.startsWith('#cap=')) return;
   history.replaceState(null, '', location.pathname);
   let d; try { d = JSON.parse(decodeURIComponent(h.slice(5))); } catch { return; }
-  if (!d.en) return;
-  S.nfTitles = S.nfTitles || {};
-  let meta = d.src ? { src: d.src, ep: d.ep || '' } : parseNfTitle(d.ti);
-  if (d.nf) { if (meta.src) S.nfTitles[d.nf] = meta; else meta = S.nfTitles[d.nf] || {}; save(); }
+  if (!d || typeof d !== 'object') return;
+  // 連結可能是別人做的：每個欄位都檢查型別和長度；這裡只顯示，不寫入任何資料，要使用者按「加入」才存
+  const str = (v, max) => typeof v === 'string' ? v.slice(0, max) : '';
+  const en = str(d.en, 1000), zh = str(d.zh, 1000);
+  if (!en.trim()) return;
+  const nf = /^\d{1,12}$/.test(d.nf || '') ? d.nf : '';
+  const url = /^https?:\/\/[^\s]{1,2000}$/.test(d.url || '') ? d.url : '';
+  const t = Number.isFinite(+d.t) ? Math.max(0, Math.min(86400, Math.floor(+d.t))) : 0;
+  let meta = d.src ? { src: str(d.src, 100), ep: str(d.ep, 20) } : parseNfTitle(str(d.ti, 100));
+  if (nf && !meta.src) meta = own(S.nfTitles, nf) || {};
   show('search');
-  setSentence(d.en + '\n' + (d.zh || ''));
+  setSentence(en + '\n' + zh);
   if (!curSentence) return;
-  const url = /^https?:\/\//.test(d.url || '') ? d.url : '';
-  Object.assign(curSentence, { src: meta.src || '', ep: meta.ep || '', nf: /^\d+$/.test(d.nf || '') ? d.nf : '', url, t: +d.t || 0 });
+  Object.assign(curSentence, { src: meta.src || '', ep: meta.ep || '', nf, url, t });
   // 在網頁上只選了一個字：直接幫你查那個字
-  if (d.hl) {
-    const first = norm(d.hl).split(' ')[0];
+  const hl = str(d.hl, 60);
+  if (hl) {
+    const first = norm(hl).split(' ')[0];
     const idx = curSentence.tokens.findIndex(tk => norm(tk.replace(/’/g, "'")) === first);
-    if (idx >= 0) tapToken(idx); else doLookup(d.hl, { keepSentence: true });
+    if (idx >= 0) tapToken(idx); else doLookup(hl, { keepSentence: true });
   }
   window.focus();
 }
@@ -1593,9 +1644,10 @@ function mergeContexts(a, b) {
 // 合併規則：同一個字取最後修改的那份（出處兩邊聯集）；刪除比修改晚才算數
 function mergeRemote(r) {
   let changed = 0;
-  for (const [w, t] of Object.entries(r.deleted || {})) if (t > (S.deleted[w] || 0)) S.deleted[w] = t;
+  for (const [w, t] of Object.entries(r.deleted || {})) if (safeKey(w) && typeof t === 'number' && t > (own(S.deleted, w) || 0)) S.deleted[w] = t;
   for (const [w, rw] of Object.entries(r.words || {})) {
-    const lw = S.words[w];
+    if (!safeKey(w) || !rw || typeof rw !== 'object' || !rw.cards || typeof rw.cards !== 'object' || !Array.isArray(rw.contexts || [])) continue;
+    const lw = own(S.words, w);
     const rmod = rw.mod || rw.added || 0;
     if (!lw) { if (rmod > (S.deleted[w] || 0)) { S.words[w] = rw; changed++; } continue; }
     const lmod = lw.mod || lw.added || 0;
@@ -1612,7 +1664,9 @@ function mergeRemote(r) {
     const cur = S.daily[k] || (S.daily[k] = { newRec: 0, newExtra: 0, reviews: 0 });
     for (const f of ['newRec', 'newExtra', 'reviews']) cur[f] = Math.max(cur[f] || 0, v[f] || 0);
   }
-  S.nfTitles = { ...(r.nfTitles || {}), ...(S.nfTitles || {}) };
+  const nfs = {};
+  for (const [k, v] of Object.entries(r.nfTitles || {})) if (/^\d{1,12}$/.test(k) && v && typeof v.src === 'string') nfs[k] = { src: v.src.slice(0, 100), ep: String(v.ep || '').slice(0, 20) };
+  S.nfTitles = { ...nfs, ...(S.nfTitles || {}) };
   return changed;
 }
 async function syncNow(manual) {

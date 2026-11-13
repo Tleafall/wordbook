@@ -28,3 +28,20 @@ python tools/build_dict.py ecdict.csv app/dict.json
 - [Free Dictionary API](https://dictionaryapi.dev/)
 - [MyMemory](https://mymemory.translated.net/)（離線字典查不到時的中文翻譯）
 - [Tesseract.js](https://github.com/naptha/tesseract.js) 與 tessdata 英文模型（Apache License 2.0），放在 `app/ocr/`
+
+## 隱私
+
+- 沒有後端伺服器、沒有帳號、沒有追蹤：單字、複習紀錄、台詞只存在使用者自己的瀏覽器（IndexedDB）。
+- 有網路時，查詢的單字會送到 [Free Dictionary API](https://dictionaryapi.dev/) 取得英英解釋；離線字典查不到時，會送到 [MyMemory](https://mymemory.translated.net/) 翻譯。只送該單字。
+- 📷 截圖辨識完全在裝置上執行，圖片不上傳。
+- 選用的同步功能把資料存在使用者自己 GitHub 帳號的 secret gist（不公開列出，但知道網址即可讀取）。金鑰只存在使用者裝置，不會進備份檔。
+
+## 安全設計
+
+- 內容安全政策（CSP）：只允許本站程式，網路連線限定字典、翻譯與 GitHub API。
+- 外部傳入的資料（書籤擷取、同步、備份還原）一律檢查型別與長度，並擋下 `__proto__` 等特殊鍵名；書籤擷取只顯示、不寫入，使用者按「加入」才存檔。
+- 同步為進階選項，教學建議使用可設到期日的 fine-grained token、專用帳號，並附撤銷步驟。
+
+## 著作權
+
+收藏的台詞屬於原著作權人，僅存在使用者裝置、供個人學習使用。本專案與 Netflix、YouTube 等服務無關，字幕擷取可能因對方改版失效。
